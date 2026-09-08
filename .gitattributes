@@ -1,0 +1,7 @@
+# These files run inside WSL/Linux. CRLF line endings break shell scripts
+# outright ("bad interpreter: /usr/bin/env bash^M") and confuse Python
+# shebangs, so pin them to LF regardless of the checkout platform.
+*.sh    text eol=lf
+*.py    text eol=lf
+*.md    text eol=lf
+*.html  text eol=lf
