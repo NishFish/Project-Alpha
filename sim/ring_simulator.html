@@ -1,0 +1,702 @@
+<title>Obstacle Ring Simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#E9EDF0;
+  --panel:#FFFFFF;
+  --panel-2:#F3F6F8;
+  --ink:#141E27;
+  --ink-2:#41535F;
+  --muted:#71838F;
+  --line:#CBD6DE;
+  --line-soft:#DFE7EC;
+  --sensor:#0E7C86;
+  --sensor-soft:rgba(14,124,134,.13);
+  --warn:#C2571A;
+  --warn-soft:rgba(194,87,26,.15);
+  --path:#3E52A3;
+  --good:#2E7D5B;
+  --unseen:#B9C6CF;
+  --grid:rgba(20,30,39,.07);
+  --shadow:0 1px 2px rgba(20,30,39,.06),0 8px 24px rgba(20,30,39,.06);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E1418;
+    --panel:#161F26;
+    --panel-2:#1B262E;
+    --ink:#E3EBF0;
+    --ink-2:#AFC0CB;
+    --muted:#8195A2;
+    --line:#2A3941;
+    --line-soft:#223038;
+    --sensor:#3FBAC4;
+    --sensor-soft:rgba(63,186,196,.16);
+    --warn:#E8873F;
+    --warn-soft:rgba(232,135,63,.18);
+    --path:#8394E6;
+    --good:#54B98C;
+    --unseen:#3A4C57;
+    --grid:rgba(227,235,240,.07);
+    --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px rgba(0,0,0,.35);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E1418;
+  --panel:#161F26;
+  --panel-2:#1B262E;
+  --ink:#E3EBF0;
+  --ink-2:#AFC0CB;
+  --muted:#8195A2;
+  --line:#2A3941;
+  --line-soft:#223038;
+  --sensor:#3FBAC4;
+  --sensor-soft:rgba(63,186,196,.16);
+  --warn:#E8873F;
+  --warn-soft:rgba(232,135,63,.18);
+  --path:#8394E6;
+  --good:#54B98C;
+  --unseen:#3A4C57;
+  --grid:rgba(227,235,240,.07);
+  --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px rgba(0,0,0,.35);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--ground);
+  color:var(--ink);
+  font-family:Archivo,"Segoe UI",system-ui,sans-serif;
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:22px 20px 40px}
+
+header.top{
+  display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;
+  gap:14px 20px;padding-bottom:14px;border-bottom:1px solid var(--line);
+}
+h1{
+  font-size:23px;font-weight:700;margin:0;letter-spacing:-.015em;text-wrap:balance;
+}
+.sub{color:var(--muted);margin:4px 0 0;max-width:62ch;font-size:13px}
+.spec{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;
+  color:var(--muted);letter-spacing:.02em;margin-top:7px;
+}
+.runbar{display:flex;gap:8px;align-items:center}
+
+button{
+  font-family:inherit;font-size:12.5px;font-weight:600;letter-spacing:.02em;
+  color:var(--ink);background:var(--panel);border:1px solid var(--line);
+  border-radius:6px;padding:7px 13px;cursor:pointer;
+}
+button:hover{border-color:var(--sensor);color:var(--sensor)}
+button:focus-visible{outline:2px solid var(--sensor);outline-offset:2px}
+button.primary{background:var(--sensor);border-color:var(--sensor);color:#fff}
+button.primary:hover{filter:brightness(1.08);color:#fff}
+
+.stage{
+  display:grid;grid-template-columns:minmax(0,1fr) 288px;gap:16px;margin-top:16px;
+}
+@media (max-width:900px){.stage{grid-template-columns:minmax(0,1fr)}}
+
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  box-shadow:var(--shadow);overflow:hidden;
+}
+.card > .head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:9px 13px;border-bottom:1px solid var(--line-soft);background:var(--panel-2);
+}
+.eyebrow{
+  font-size:10.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--muted);
+}
+canvas{display:block;width:100%}
+#plan{height:452px}
+#dial{height:262px}
+
+.rail{display:flex;flex-direction:column;gap:16px;min-width:0}
+
+.readout{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line-soft)}
+.cell{background:var(--panel);padding:9px 12px 10px}
+.cell .k{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.cell .v{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:17px;font-weight:500;
+  font-variant-numeric:tabular-nums;margin-top:1px;letter-spacing:-.02em;
+}
+.cell .u{font-size:11px;color:var(--muted);font-weight:400}
+
+.statebar{padding:10px 13px;display:flex;align-items:center;gap:9px;border-top:1px solid var(--line-soft)}
+.pill{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11px;font-weight:600;
+  letter-spacing:.06em;padding:3px 9px;border-radius:99px;border:1px solid currentColor;
+}
+.pill.cruise{color:var(--good)}
+.pill.slow{color:var(--warn)}
+.pill.brake{color:var(--warn);background:var(--warn-soft)}
+.pill.blind{color:var(--warn);background:var(--warn-soft)}
+.statenote{font-size:11.5px;color:var(--muted);line-height:1.35}
+
+.rack{margin-top:16px}
+.rackgrid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));
+  gap:1px;background:var(--line-soft);
+}
+.ctl{background:var(--panel);padding:12px 14px 13px;display:flex;flex-direction:column;gap:5px}
+.ctl .lbl{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.ctl .name{font-size:12.5px;font-weight:600}
+.ctl .val{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12px;
+  color:var(--sensor);font-variant-numeric:tabular-nums;
+}
+.ctl .why{font-size:11.5px;color:var(--muted);line-height:1.4}
+.ctl.on{box-shadow:inset 3px 0 0 var(--sensor)}
+
+input[type=range]{width:100%;accent-color:var(--sensor);margin:2px 0}
+input[type=range]:focus-visible{outline:2px solid var(--sensor);outline-offset:3px}
+
+.tog{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none}
+.tog input{position:absolute;opacity:0;pointer-events:none}
+.track{
+  width:34px;height:19px;border-radius:99px;background:var(--line);flex:none;
+  position:relative;transition:background .16s;
+}
+.knob{
+  position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;
+  background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .16s;
+}
+.tog input:checked + .track{background:var(--sensor)}
+.tog input:checked + .track .knob{transform:translateX(15px)}
+.tog input:focus-visible + .track{outline:2px solid var(--sensor);outline-offset:2px}
+
+.legend{
+  margin-top:16px;display:flex;flex-wrap:wrap;gap:6px 20px;padding:11px 14px;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+}
+.lg{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink-2)}
+.sw{width:15px;height:9px;border-radius:2px;flex:none}
+
+.note{
+  margin-top:16px;padding:13px 15px;border-left:2px solid var(--warn);
+  background:var(--panel);border-radius:0 8px 8px 0;font-size:12.5px;color:var(--ink-2);
+  max-width:74ch;
+}
+.note b{color:var(--ink)}
+code{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.92em;
+  background:var(--panel-2);padding:1px 4px;border-radius:3px;
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Obstacle Ring Simulator</h1>
+      <p class="sub">The same conversion <code>depth_to_obstacle_ring.py</code> performs, running live: rays into sectors, sectors into an avoidance decision.</p>
+      <p class="spec">OBSTACLE_DISTANCE &middot; 72 sectors &times; 5&deg; &middot; MAV_FRAME_BODY_FRD &middot; index 0 = straight ahead, clockwise</p>
+    </div>
+    <div class="runbar">
+      <button id="btnRun" class="primary">Pause</button>
+      <button id="btnReset">Reset</button>
+    </div>
+  </header>
+
+  <div class="stage">
+    <div class="card">
+      <div class="head">
+        <span class="eyebrow">Plan view</span>
+        <span class="eyebrow" id="scaleLbl">44 &times; 30 m</span>
+      </div>
+      <canvas id="plan"></canvas>
+    </div>
+
+    <div class="rail">
+      <div class="card">
+        <div class="head"><span class="eyebrow">Sector ring</span><span class="eyebrow" id="secCount">0 / 72</span></div>
+        <canvas id="dial"></canvas>
+        <div class="readout">
+          <div class="cell"><div class="k">Ground speed</div><div class="v"><span id="vSpd">0.0</span> <span class="u">m/s</span></div></div>
+          <div class="cell"><div class="k">Nearest</div><div class="v"><span id="vNear">&ndash;</span> <span class="u">cm</span></div></div>
+          <div class="cell"><div class="k">Stopping dist</div><div class="v"><span id="vStop">0.0</span> <span class="u">m</span></div></div>
+          <div class="cell"><div class="k">Collisions</div><div class="v" id="vHits">0</div></div>
+        </div>
+        <div class="statebar">
+          <span class="pill cruise" id="vState">CRUISE</span>
+          <span class="statenote" id="vNote">Path ahead is clear.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card rack">
+    <div class="head"><span class="eyebrow">Parameters</span><span class="eyebrow">each maps to something real</span></div>
+    <div class="rackgrid">
+
+      <div class="ctl">
+        <div class="lbl"><span class="name">Speed cap</span><span class="val" id="lSpeed">2.0 m/s</span></div>
+        <input type="range" id="rSpeed" min="1" max="7" step="0.5" value="2">
+        <div class="why"><code>WPNAV_SPEED</code>. Push past 4 and stopping distance outruns what the camera can see.</div>
+      </div>
+
+      <div class="ctl">
+        <div class="lbl"><span class="name">Field of view</span><span class="val" id="lFov">72&deg;</span></div>
+        <input type="range" id="rFov" min="40" max="150" step="2" value="72">
+        <div class="why">OAK-D Lite is 72&deg;. That covers 15 of the 72 sectors &mdash; the rest are never observed.</div>
+      </div>
+
+      <div class="ctl">
+        <div class="lbl"><span class="name">Max range</span><span class="val" id="lRange">6.0 m</span></div>
+        <input type="range" id="rRange" min="2" max="10" step="0.5" value="6">
+        <div class="why">Beyond this, stereo depth stops being trustworthy and sectors read as unobserved.</div>
+      </div>
+
+      <div class="ctl">
+        <div class="lbl"><span class="name">Sensor noise</span><span class="val" id="lNoise">on</span></div>
+        <label class="tog"><input type="checkbox" id="cNoise" checked><span class="track"><span class="knob"></span></span><span class="why" style="color:var(--ink-2)">Range error growing with distance, plus dropouts</span></label>
+        <div class="why">Real stereo error scales with range squared, and textureless surfaces return nothing at all.</div>
+      </div>
+
+      <div class="ctl" id="ctlPct">
+        <div class="lbl"><span class="name">10th percentile</span><span class="val" id="lPct">on</span></div>
+        <label class="tog"><input type="checkbox" id="cPct" checked><span class="track"><span class="knob"></span></span><span class="why" style="color:var(--ink-2)">Off = use the single nearest ray</span></label>
+        <div class="why">Turn it off with noise on: one bad ray per sector is enough to trigger braking.</div>
+      </div>
+
+      <div class="ctl" id="ctlTemp">
+        <div class="lbl"><span class="name">Temporal filter</span><span class="val" id="lTemp">3 frames</span></div>
+        <label class="tog"><input type="checkbox" id="cTemp" checked><span class="track"><span class="knob"></span></span><span class="why" style="color:var(--ink-2)">Median across the last three rings</span></label>
+        <div class="why">Outvotes single-frame dropouts. Costs about 200&nbsp;ms of latency, already in the budget.</div>
+      </div>
+
+      <div class="ctl" id="ctlYaw">
+        <div class="lbl"><span class="name">Yaw into travel</span><span class="val" id="lYaw">on</span></div>
+        <label class="tog"><input type="checkbox" id="cYaw" checked><span class="track"><span class="knob"></span></span><span class="why" style="color:var(--ink-2)">Camera points where the drone is going</span></label>
+        <div class="why"><code>WP_YAW_BEHAVIOR</code>. Switch it off and watch it sidestep into ground it has never looked at.</div>
+      </div>
+
+      <div class="ctl">
+        <div class="lbl"><span class="name">Keep-out margin</span><span class="val" id="lMargin">2.0 m</span></div>
+        <input type="range" id="rMargin" min="0.5" max="4" step="0.25" value="2">
+        <div class="why"><code>OA_MARGIN_MAX</code>. How much clearance the planner tries to hold.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="legend">
+    <span class="lg"><span class="sw" style="background:var(--warn)"></span>Obstacle</span>
+    <span class="lg"><span class="sw" style="background:var(--sensor-soft);border:1px solid var(--sensor)"></span>Camera field of view</span>
+    <span class="lg"><span class="sw" style="background:var(--path)"></span>Mission waypoints</span>
+    <span class="lg"><span class="sw" style="background:var(--unseen)"></span>Unobserved sector</span>
+    <span class="lg"><span class="sw" style="background:transparent;border:1px dashed var(--ink-2)"></span>Stopping distance</span>
+  </div>
+
+  <p class="note"><b>The unobserved sectors are the important part.</b> There is no value in <code>OBSTACLE_DISTANCE</code> that means &ldquo;I cannot see here&rdquo; &mdash; a sector you have never looked at is indistinguishable from open space. With yaw-into-travel switched off, the aircraft will happily route through the grey.</p>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+var W = 44, H = 30;                  // world metres
+var NUM = 72, SECW = 360/NUM;
+var LAT = 0.25, DECEL = 3.0;         // latency s, braking m/s^2
+
+var css = getComputedStyle(document.documentElement);
+function C(n){ return css.getPropertyValue(n).trim(); }
+
+var obstacles = [
+  {t:'c', x:11.5, y:8.4,  r:0.85},
+  {t:'c', x:16.2, y:5.6,  r:0.55},
+  {t:'c', x:18.6, y:10.4, r:0.70},
+  {t:'c', x:24.3, y:7.2,  r:1.05},
+  {t:'c', x:29.6, y:12.6, r:0.75},
+  {t:'c', x:33.4, y:18.2, r:0.95},
+  {t:'c', x:27.4, y:20.6, r:0.65},
+  {t:'c', x:37.0, y:12.0, r:0.80},
+  {t:'r', x:20.5, y:14.0, w:0.7, h:5.4},
+  {t:'r', x:30.0, y:3.0,  w:6.0, h:0.7}
+];
+var waypoints = [ {x:4,y:8}, {x:22,y:7}, {x:38,y:16}, {x:30,y:25}, {x:8,y:21} ];
+
+var d, wpIdx, hits, filterHist;
+function reset(){
+  d = { x:4, y:8, vx:1.2, vy:0, yaw:0, spd:0 };
+  wpIdx = 1; hits = 0; filterHist = [];
+  ring = new Array(NUM).fill(Infinity);
+}
+var ring = new Array(NUM).fill(Infinity);
+
+var P = { speed:2, fov:72, range:6, margin:2, noise:true, pct:true, temp:true, yaw:true };
+
+// ---- ray casting -------------------------------------------------------
+function castRay(ox, oy, ang, maxR){
+  var dx = Math.cos(ang), dy = Math.sin(ang), best = Infinity;
+  for(var i=0;i<obstacles.length;i++){
+    var o = obstacles[i], t;
+    if(o.t === 'c'){
+      var fx = ox-o.x, fy = oy-o.y;
+      var b = 2*(fx*dx+fy*dy), c2 = fx*fx+fy*fy-o.r*o.r;
+      var disc = b*b-4*c2;
+      if(disc < 0) continue;
+      var sq = Math.sqrt(disc);
+      t = (-b-sq)/2; if(t < 0) t = (-b+sq)/2;
+      if(t >= 0 && t < best) best = t;
+    } else {
+      var x0=o.x-o.w/2, x1=o.x+o.w/2, y0=o.y-o.h/2, y1=o.y+o.h/2;
+      var tmin=0, tmax=maxR, ok=true;
+      var lo,hi,tmp;
+      if(Math.abs(dx) < 1e-9){ if(ox<x0||ox>x1) ok=false; }
+      else { lo=(x0-ox)/dx; hi=(x1-ox)/dx; if(lo>hi){tmp=lo;lo=hi;hi=tmp;} tmin=Math.max(tmin,lo); tmax=Math.min(tmax,hi); }
+      if(ok){
+        if(Math.abs(dy) < 1e-9){ if(oy<y0||oy>y1) ok=false; }
+        else { lo=(y0-oy)/dy; hi=(y1-oy)/dy; if(lo>hi){tmp=lo;lo=hi;hi=tmp;} tmin=Math.max(tmin,lo); tmax=Math.min(tmax,hi); }
+      }
+      if(ok && tmax >= tmin && tmin >= 0 && tmin < best) best = tmin;
+    }
+  }
+  return best;
+}
+
+var gaussCache = null;
+function gauss(){
+  if(gaussCache !== null){ var g = gaussCache; gaussCache = null; return g; }
+  var u=0,v=0;
+  while(u===0) u=Math.random();
+  while(v===0) v=Math.random();
+  var m = Math.sqrt(-2*Math.log(u));
+  gaussCache = m*Math.sin(2*Math.PI*v);
+  return m*Math.cos(2*Math.PI*v);
+}
+
+var rays = [];
+function scan(){
+  var n = 190, half = P.fov/2;
+  rays.length = 0;
+  var buckets = [];
+  for(var s=0;s<NUM;s++) buckets.push([]);
+
+  for(var i=0;i<n;i++){
+    var rel = -half + (i/(n-1))*P.fov;           // degrees, +ve to the right
+    var world = d.yaw + rel*Math.PI/180;
+    var r = castRay(d.x, d.y, world, P.range);
+    var valid = r <= P.range;
+    if(valid && P.noise){
+      r += gauss() * (0.012 * r * r);            // stereo error grows with range^2
+      if(Math.random() < 0.06) valid = false;    // textureless dropout
+      if(r > P.range || r < 0.2) valid = false;
+    }
+    rays.push({rel:rel, r:valid?r:P.range, hit:valid});
+    if(valid){
+      var idx = ((Math.round(rel/SECW) % NUM) + NUM) % NUM;
+      buckets[idx].push(r);
+    }
+  }
+
+  var raw = new Array(NUM).fill(Infinity);
+  for(var k=0;k<NUM;k++){
+    var b = buckets[k];
+    if(b.length < 3) continue;                   // min_pixels
+    b.sort(function(a,c){return a-c;});
+    raw[k] = P.pct ? b[Math.floor(b.length*0.10)] : b[0];
+  }
+
+  if(P.temp){
+    filterHist.push(raw);
+    if(filterHist.length > 3) filterHist.shift();
+    var out = new Array(NUM);
+    for(var m=0;m<NUM;m++){
+      var vals = filterHist.map(function(f){ return isFinite(f[m]) ? f[m] : 99; });
+      vals.sort(function(a,c){return a-c;});
+      var med = vals[Math.floor(vals.length/2)];
+      out[m] = med >= 99 ? Infinity : med;
+    }
+    ring = out;
+  } else {
+    filterHist = [];
+    ring = raw;
+  }
+}
+
+// ---- guidance ----------------------------------------------------------
+var state = 'CRUISE', note = 'Path ahead is clear.';
+
+function clearAhead(relDeg, need){
+  var span = 12;                                 // body half-width in degrees
+  for(var o=-span;o<=span;o+=SECW){
+    var idx = ((Math.round((relDeg+o)/SECW) % NUM) + NUM) % NUM;
+    if(ring[idx] < need) return false;
+  }
+  return true;
+}
+
+function guide(dt){
+  var wp = waypoints[wpIdx];
+  var gx = wp.x-d.x, gy = wp.y-d.y;
+  var dist = Math.hypot(gx,gy);
+  if(dist < 1.2){ wpIdx = (wpIdx+1)%waypoints.length; return; }
+
+  var goalWorld = Math.atan2(gy,gx);
+  var rel = ((goalWorld-d.yaw)*180/Math.PI + 540)%360 - 180;
+
+  var stop = P.speed*LAT + P.speed*P.speed/(2*DECEL);
+  var need = Math.min(stop + P.margin, P.range);
+
+  var half = P.fov/2, chosen = null;
+  if(Math.abs(rel) <= half && clearAhead(rel, need)) chosen = rel;
+  else {
+    for(var off=SECW; off<=half; off+=SECW){
+      var a = rel+off, b = rel-off;
+      if(Math.abs(a) <= half && clearAhead(a,need)){ chosen = a; break; }
+      if(Math.abs(b) <= half && clearAhead(b,need)){ chosen = b; break; }
+    }
+  }
+
+  var nearest = Infinity;
+  for(var i=0;i<NUM;i++) if(ring[i] < nearest) nearest = ring[i];
+
+  var target;
+  if(chosen === null){
+    state='BRAKE'; note='No clear corridor in view. Holding.';
+    target = 0;
+  } else if(Math.abs(chosen-rel) > 1){
+    state='SLOW'; note='Deviating '+Math.round(Math.abs(chosen-rel))+'&deg; around an obstacle.';
+    target = P.speed*0.6;
+  } else if(!P.yaw && nearest === Infinity){
+    state='BLIND'; note='Yaw locked &mdash; travelling into unobserved sectors.';
+    target = P.speed;
+  } else {
+    state='CRUISE'; note='Path ahead is clear.';
+    target = P.speed;
+  }
+  if(isFinite(nearest) && nearest < need*0.55){ state='BRAKE'; note='Obstacle inside the keep-out margin.'; target=Math.min(target,0.4); }
+
+  d.spd += (target-d.spd)*Math.min(1, dt*2.2);
+
+  var steerWorld = (chosen===null? goalWorld : d.yaw + chosen*Math.PI/180);
+  var cur = Math.atan2(d.vy,d.vx);
+  if(d.spd < 0.02) cur = steerWorld;
+  var diff = ((steerWorld-cur+Math.PI*3)%(Math.PI*2))-Math.PI;
+  var head = cur + diff*Math.min(1, dt*2.6);
+  d.vx = Math.cos(head)*d.spd; d.vy = Math.sin(head)*d.spd;
+
+  d.x += d.vx*dt; d.y += d.vy*dt;
+  d.x = Math.max(1,Math.min(W-1,d.x)); d.y = Math.max(1,Math.min(H-1,d.y));
+
+  var wantYaw = P.yaw ? head : 0;
+  var yd = ((wantYaw-d.yaw+Math.PI*3)%(Math.PI*2))-Math.PI;
+  d.yaw += yd*Math.min(1, dt*3.0);
+
+  for(var j=0;j<obstacles.length;j++){
+    var o = obstacles[j], inside;
+    if(o.t==='c') inside = Math.hypot(d.x-o.x,d.y-o.y) < o.r+0.22;
+    else inside = Math.abs(d.x-o.x) < o.w/2+0.22 && Math.abs(d.y-o.y) < o.h/2+0.22;
+    if(inside){
+      hits++;
+      var aw = Math.atan2(d.y-(o.y),d.x-(o.x));
+      d.x += Math.cos(aw)*0.55; d.y += Math.sin(aw)*0.55;
+      d.spd = 0;
+      break;
+    }
+  }
+}
+
+// ---- rendering ---------------------------------------------------------
+var plan = document.getElementById('plan'), pctx = plan.getContext('2d');
+var dial = document.getElementById('dial'), dctx = dial.getContext('2d');
+var SC = 1;
+
+function fit(cv, ctx){
+  var dpr = window.devicePixelRatio||1;
+  var r = cv.getBoundingClientRect();
+  cv.width = Math.round(r.width*dpr); cv.height = Math.round(r.height*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  return {w:r.width, h:r.height};
+}
+
+function drawPlan(){
+  var s = fit(plan,pctx);
+  SC = Math.min(s.w/W, s.h/H);
+  var ox = (s.w-W*SC)/2, oy = (s.h-H*SC)/2;
+  function X(v){return ox+v*SC;} function Y(v){return oy+v*SC;}
+
+  pctx.clearRect(0,0,s.w,s.h);
+  pctx.fillStyle = C('--panel'); pctx.fillRect(0,0,s.w,s.h);
+
+  pctx.strokeStyle = C('--grid'); pctx.lineWidth = 1;
+  for(var g=0;g<=W;g+=2){ pctx.beginPath(); pctx.moveTo(X(g),Y(0)); pctx.lineTo(X(g),Y(H)); pctx.stroke(); }
+  for(var h2=0;h2<=H;h2+=2){ pctx.beginPath(); pctx.moveTo(X(0),Y(h2)); pctx.lineTo(X(W),Y(h2)); pctx.stroke(); }
+
+  // mission
+  pctx.strokeStyle = C('--path'); pctx.globalAlpha=.5; pctx.lineWidth=1.5; pctx.setLineDash([5,5]);
+  pctx.beginPath();
+  for(var i=0;i<=waypoints.length;i++){
+    var w2 = waypoints[i%waypoints.length];
+    if(i===0) pctx.moveTo(X(w2.x),Y(w2.y)); else pctx.lineTo(X(w2.x),Y(w2.y));
+  }
+  pctx.stroke(); pctx.setLineDash([]); pctx.globalAlpha=1;
+  for(var k=0;k<waypoints.length;k++){
+    var wp=waypoints[k];
+    pctx.fillStyle = k===wpIdx ? C('--path') : C('--panel');
+    pctx.strokeStyle = C('--path'); pctx.lineWidth=1.5;
+    pctx.beginPath(); pctx.arc(X(wp.x),Y(wp.y),4.5,0,7); pctx.fill(); pctx.stroke();
+  }
+
+  // fov wedge
+  var half = P.fov/2*Math.PI/180;
+  pctx.fillStyle = C('--sensor-soft');
+  pctx.beginPath(); pctx.moveTo(X(d.x),Y(d.y));
+  pctx.arc(X(d.x),Y(d.y),P.range*SC, d.yaw-half, d.yaw+half); pctx.closePath(); pctx.fill();
+
+  // rays
+  pctx.lineWidth = 1;
+  for(var r2=0;r2<rays.length;r2+=3){
+    var ry = rays[r2], a = d.yaw + ry.rel*Math.PI/180;
+    pctx.strokeStyle = ry.hit ? C('--sensor') : C('--unseen');
+    pctx.globalAlpha = ry.hit ? .38 : .13;
+    pctx.beginPath(); pctx.moveTo(X(d.x),Y(d.y));
+    pctx.lineTo(X(d.x+Math.cos(a)*ry.r), Y(d.y+Math.sin(a)*ry.r)); pctx.stroke();
+  }
+  pctx.globalAlpha=1;
+
+  // obstacles
+  pctx.fillStyle = C('--warn');
+  for(var o2=0;o2<obstacles.length;o2++){
+    var o=obstacles[o2];
+    pctx.beginPath();
+    if(o.t==='c') pctx.arc(X(o.x),Y(o.y),o.r*SC,0,7);
+    else pctx.rect(X(o.x-o.w/2),Y(o.y-o.h/2),o.w*SC,o.h*SC);
+    pctx.fill();
+  }
+
+  // stopping distance
+  var stop = P.speed*LAT + P.speed*P.speed/(2*DECEL);
+  pctx.strokeStyle = C('--ink-2'); pctx.globalAlpha=.45;
+  pctx.setLineDash([4,4]); pctx.lineWidth=1;
+  pctx.beginPath(); pctx.arc(X(d.x),Y(d.y),stop*SC,0,7); pctx.stroke();
+  pctx.setLineDash([]); pctx.globalAlpha=1;
+
+  // drone
+  pctx.save(); pctx.translate(X(d.x),Y(d.y)); pctx.rotate(d.yaw);
+  pctx.fillStyle = C('--ink');
+  pctx.beginPath(); pctx.moveTo(9,0); pctx.lineTo(-6,6); pctx.lineTo(-3,0); pctx.lineTo(-6,-6);
+  pctx.closePath(); pctx.fill();
+  pctx.restore();
+}
+
+function drawDial(){
+  var s = fit(dial,dctx);
+  var cx = s.w/2, cy = s.h/2, R = Math.min(s.w,s.h)/2 - 16;
+  dctx.clearRect(0,0,s.w,s.h);
+  dctx.fillStyle = C('--panel'); dctx.fillRect(0,0,s.w,s.h);
+
+  var inner = R*0.30;
+  for(var i=0;i<NUM;i++){
+    var a0 = (i*SECW-SECW/2-90)*Math.PI/180;
+    var a1 = (i*SECW+SECW/2-90)*Math.PI/180;
+    var v = ring[i], lit = isFinite(v);
+    var frac = lit ? Math.max(0.08, 1 - Math.min(v,P.range)/P.range) : 0;
+    var rad = lit ? inner + (R-inner)*frac : inner + (R-inner)*0.055;
+    dctx.beginPath();
+    dctx.moveTo(cx+Math.cos(a0)*inner, cy+Math.sin(a0)*inner);
+    dctx.arc(cx,cy,rad,a0,a1);
+    dctx.lineTo(cx+Math.cos(a1)*inner, cy+Math.sin(a1)*inner);
+    dctx.arc(cx,cy,inner,a1,a0,true);
+    dctx.closePath();
+    dctx.fillStyle = lit ? C('--warn') : C('--unseen');
+    dctx.globalAlpha = lit ? (0.35+0.65*frac) : 0.5;
+    dctx.fill();
+  }
+  dctx.globalAlpha = 1;
+
+  var half = P.fov/2;
+  dctx.strokeStyle = C('--sensor'); dctx.lineWidth = 2;
+  dctx.beginPath(); dctx.arc(cx,cy,R+6,(-half-90)*Math.PI/180,(half-90)*Math.PI/180); dctx.stroke();
+
+  dctx.strokeStyle = C('--line'); dctx.lineWidth = 1;
+  dctx.beginPath(); dctx.arc(cx,cy,inner,0,7); dctx.stroke();
+
+  dctx.fillStyle = C('--muted');
+  dctx.font = '600 9px "IBM Plex Mono", monospace';
+  dctx.textAlign='center'; dctx.textBaseline='middle';
+  var marks=[['0',0],['90',90],['180',180],['270',270]];
+  for(var m=0;m<marks.length;m++){
+    var ang=(marks[m][1]-90)*Math.PI/180;
+    dctx.fillText(marks[m][0], cx+Math.cos(ang)*(R+11), cy+Math.sin(ang)*(R+11));
+  }
+
+  dctx.fillStyle = C('--ink');
+  dctx.beginPath();
+  dctx.moveTo(cx, cy-inner*0.55); dctx.lineTo(cx-inner*0.4, cy+inner*0.4);
+  dctx.lineTo(cx, cy+inner*0.15); dctx.lineTo(cx+inner*0.4, cy+inner*0.4);
+  dctx.closePath(); dctx.fill();
+}
+
+// ---- ui ----------------------------------------------------------------
+function el(id){ return document.getElementById(id); }
+function bindRange(id, lid, key, fmt){
+  var r = el(id);
+  function up(){ P[key] = parseFloat(r.value); el(lid).innerHTML = fmt(P[key]); }
+  r.addEventListener('input', up); up();
+}
+function bindTog(id, lid, key, ctlId){
+  var c = el(id);
+  function up(){
+    P[key] = c.checked;
+    el(lid).textContent = c.checked ? (key==='temp'?'3 frames':'on') : 'off';
+    if(ctlId) el(ctlId).classList.toggle('on', !c.checked);
+  }
+  c.addEventListener('change', up); up();
+}
+bindRange('rSpeed','lSpeed','speed',function(v){return v.toFixed(1)+' m/s';});
+bindRange('rFov','lFov','fov',function(v){return Math.round(v)+'&deg;';});
+bindRange('rRange','lRange','range',function(v){return v.toFixed(1)+' m';});
+bindRange('rMargin','lMargin','margin',function(v){return v.toFixed(2)+' m';});
+bindTog('cNoise','lNoise','noise');
+bindTog('cPct','lPct','pct','ctlPct');
+bindTog('cTemp','lTemp','temp','ctlTemp');
+bindTog('cYaw','lYaw','yaw','ctlYaw');
+
+var running = true;
+el('btnRun').addEventListener('click', function(){
+  running = !running;
+  this.textContent = running ? 'Pause' : 'Run';
+  if(running) last = performance.now();
+});
+el('btnReset').addEventListener('click', function(){ reset(); });
+
+function updateReadout(){
+  var near = Infinity;
+  var lit = 0;
+  for(var i=0;i<NUM;i++){ if(isFinite(ring[i])){ lit++; if(ring[i]<near) near=ring[i]; } }
+  el('secCount').textContent = lit+' / 72';
+  el('vSpd').textContent = d.spd.toFixed(1);
+  el('vNear').textContent = isFinite(near) ? Math.round(near*100) : '–';
+  el('vStop').textContent = (P.speed*LAT + P.speed*P.speed/(2*DECEL)).toFixed(1);
+  el('vHits').textContent = hits;
+  var p = el('vState');
+  p.textContent = state;
+  p.className = 'pill ' + state.toLowerCase();
+  el('vNote').innerHTML = note;
+}
+
+var last = performance.now();
+function frame(now){
+  var dt = Math.min(0.05, (now-last)/1000); last = now;
+  if(running){ scan(); guide(dt); }
+  drawPlan(); drawDial(); updateReadout();
+  requestAnimationFrame(frame);
+}
+
+reset();
+scan();
+requestAnimationFrame(frame);
+window.addEventListener('resize', function(){ drawPlan(); drawDial(); });
+})();
+</script>
