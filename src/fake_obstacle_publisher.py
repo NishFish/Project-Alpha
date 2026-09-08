@@ -30,10 +30,8 @@ import time
 
 from pymavlink import mavutil
 
-# ArduPilot expects exactly 72 distance readings arranged in a circle
-# around the drone, so each one covers 360 / 72 = 5 degrees.
-NUM_SECTORS = 72
-SECTOR_WIDTH_DEG = 360.0 / NUM_SECTORS
+from obstacle_ring import (NUM_SECTORS, SECTOR_WIDTH_DEG, empty_ring,
+                          send_obstacle_distance)
 
 
 def build_distance_ring(distance_m, width_deg, min_m, max_m):
@@ -49,9 +47,8 @@ def build_distance_ring(distance_m, width_deg, min_m, max_m):
     """
     min_cm = int(min_m * 100)
     max_cm = int(max_m * 100)
-    empty = max_cm + 1
 
-    distances = [empty] * NUM_SECTORS
+    distances = empty_ring(max_cm)
 
     # How many sectors on each side of straight-ahead the wall covers.
     half_span = int(round((width_deg / 2.0) / SECTOR_WIDTH_DEG))
@@ -110,17 +107,8 @@ def main():
         while True:
             time_usec = int((time.monotonic() - started) * 1e6)
 
-            master.mav.obstacle_distance_send(
-                time_usec,
-                mavutil.mavlink.MAV_DISTANCE_SENSOR_LASER,
-                distances,
-                0,                # increment: 0 means "use increment_f instead"
-                min_cm,
-                max_cm,
-                SECTOR_WIDTH_DEG,  # increment_f: degrees per sector
-                0.0,               # angle_offset: 0 means index 0 is straight ahead
-                mavutil.mavlink.MAV_FRAME_BODY_FRD,
-            )
+            send_obstacle_distance(master, distances, min_cm, max_cm,
+                                   time_usec=time_usec)
 
             sent += 1
             if sent % int(args.rate) == 0:

@@ -21,7 +21,7 @@ producing that one message accurately.**
 
 Each step has a gate. Don't move on until it passes.
 
-- [ ] **1. Fix the PC.** Convert WSL1 to WSL2.
+- [x] **1. Fix the PC.** Convert WSL1 to WSL2. **Done.**
       *Gate: `wsl -l -v` reports version 2.*
 
 - [ ] **2. Fake drone flying.** ArduPilot SITL + Gazebo.
@@ -33,8 +33,10 @@ Each step has a gate. Don't move on until it passes.
       **This is the most important step in the project.** Once it passes, the
       hard part is done and everything after is swapping fake numbers for real ones.
 
-- [ ] **4. Fake camera.** Add a depth camera to the simulator, convert what it
-      sees into the same message.
+- [ ] **4. Fake camera.** Add a depth camera to the simulator and feed its output
+      through `src/depth_to_obstacle_ring.py`, which emits the same message.
+      The conversion is written and unit-tested; what remains is wiring it to a
+      real depth source.
       *Gate: avoids a simulated wall it actually "saw", 10 runs, zero collisions.*
 
 - [ ] **5. Buy hardware, test on the desk.** Raspberry Pi 5 + OAK-D Lite. No drone.
@@ -102,8 +104,26 @@ Project-Alpha/
 │   └── 02-ardupilot-params.md       the parameters that turn avoidance on
 └── src/
     ├── check_avoidance_support.py   run first: does this firmware support it?
-    └── fake_obstacle_publisher.py   Step 3
+    ├── fake_obstacle_publisher.py   Step 3
+    ├── obstacle_ring.py             shared ring format + MAVLink send
+    ├── depth_to_obstacle_ring.py    Step 4: depth image -> 72 sectors
+    └── test_depth_to_ring.py        self-tests, no hardware needed
 ```
+
+## Trying it now
+
+The depth pipeline runs against synthetic scenes, so it can be developed and
+validated long before any hardware exists:
+
+```
+python src/test_depth_to_ring.py                 # 15 self-tests
+python src/depth_to_obstacle_ring.py --demo both # a wall and a floor
+python src/depth_to_obstacle_ring.py --demo ground --pitch -20 --no-compensate
+```
+
+That last one is worth running. It shows what happens when attitude is ignored:
+the ground turns into a wall closing in at two metres, which is what an aircraft
+would brake for every time it tilted to accelerate.
 
 ## Timeline
 
