@@ -40,6 +40,22 @@ Gazebo also needs **OpenGL hardware acceleration**. WSLg passes the RTX 3060
 through, so this should work, but software rendering makes Gazebo unusable --
 if it is crawling, that is the first thing to check.
 
+## Everything below runs INSIDE Ubuntu
+
+Not PowerShell. `gz`, `sim_vehicle.py`, `ros2` and `colcon` are Linux programs
+living in the WSL distro. Windows has never heard of them, so running them in
+PowerShell gives `The term 'gz' is not recognized` -- which looks like a broken
+install but is only the wrong shell.
+
+Open an Ubuntu shell first, by any of:
+
+  * Start menu -> **Ubuntu**
+  * Windows Terminal -> the dropdown beside the `+` tab -> **Ubuntu**
+  * `wsl -d Ubuntu` from PowerShell
+
+You want **two** of them side by side. The prompt tells you which you are in:
+`PS C:\Users\gtvic>` is PowerShell, `nishanth@...:~$` is Ubuntu.
+
 ## Level A -- SITL and Gazebo, no ROS
 
 Install Gazebo Harmonic (ArduPilot's recommended pairing on Ubuntu 22.04),
@@ -70,16 +86,22 @@ export GZ_SIM_SYSTEM_PLUGIN_PATH=$HOME/gz_ws/src/ardupilot_gazebo/build:$GZ_SIM_
 export GZ_SIM_RESOURCE_PATH=$HOME/gz_ws/src/ardupilot_gazebo/models:$HOME/gz_ws/src/ardupilot_gazebo/worlds:$GZ_SIM_RESOURCE_PATH
 ```
 
-Run it in two terminals:
+Run it in two **Ubuntu** terminals:
 
 ```bash
-# terminal 1
+# terminal 1 -- the simulator. A Gazebo window opens on your Windows
+# desktop through WSLg. Leave it running.
 gz sim -v4 -r iris_runway.sdf
+```
 
-# terminal 2
+```bash
+# terminal 2 -- the autopilot, talking to that simulator
 sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --map --console \
                --out=udp:127.0.0.1:14551
 ```
+
+Start Gazebo first and give it a few seconds. The other way round, SITL finds
+no simulator and sits waiting.
 
 Keep the `--out` flag -- it is the port our scripts listen on.
 

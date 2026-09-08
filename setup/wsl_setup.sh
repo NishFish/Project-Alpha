@@ -132,7 +132,8 @@ cat <<'NEXT'
 ============================================================
 Done. Open a NEW shell so the environment variables take.
 
-LEVEL A -- fly in Gazebo, two terminals:
+LEVEL A -- fly in Gazebo. These are Linux commands: run them in
+an UBUNTU shell, not PowerShell. Two terminals:
 
   gz sim -v4 -r iris_runway.sdf
 
