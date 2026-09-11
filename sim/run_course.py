@@ -215,6 +215,46 @@ class Runner(object):
         ack = self.m.recv_match(type="MISSION_ACK", blocking=True, timeout=8)
         return ack.type if ack else None
 
+    def reset_scoring(self):
+        """Clear per-run measurements so each flight is scored on its own."""
+        self.track = []
+        self.closest = dict((i, 1e9) for i in range(len(self.crs.shapes)))
+        self.texts = []
+
+    def return_to_start(self):
+        """Fly back to the start marker and land, ready for another run.
+
+        The return leg is flown in GUIDED with avoidance still active, so it is
+        a second pass over the course rather than dead time -- and it is scored
+        nowhere, which is deliberate: a run means start to goal.
+        """
+        sn, se = self.crs.start
+        print("  returning to start ...")
+        self.m.set_mode_apm("GUIDED")
+        self.pump(2.0)
+
+        deadline = time.time() + 200.0
+        while time.time() < deadline:
+            self.m.mav.set_position_target_local_ned_send(
+                0, self.m.target_system, self.m.target_component,
+                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                0b0000111111111000,
+                sn, se, -self.a.alt, 0, 0, 0, 0, 0, 0, 0, 0)
+            if self.pump(3.0,
+                         until=lambda: math.hypot(sn - self.x, se - self.y) < 4.0):
+                break
+        print("  back at N %.1f E %.1f, landing" % (self.x, self.y))
+
+        self.m.set_mode_apm("LAND")
+        if not self.pump(90.0, until=lambda: not self.armed):
+            print("  did not disarm; forcing")
+            self.m.mav.command_long_send(
+                self.m.target_system, self.m.target_component,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0, 0, 0, 0, 0, 0, 0, 21196)     # 21196 = force disarm
+            self.pump(10.0, until=lambda: not self.armed)
+        print("  disarmed at %.1f m" % -self.z)
+
     # -- run ---------------------------------------------------------------
     def run(self):
         print()
@@ -232,8 +272,75 @@ class Runner(object):
             self.start_depth()
         else:
             print("percept : computed from known obstacle positions")
-        print()
 
+        if self.a.runs > 1:
+            print("runs    : %d, scored together" % self.a.runs)
+            return self.batch()
+        print()
+        return self.fly_once()
+
+    def batch(self):
+        results = []
+        for i in range(self.a.runs):
+            print()
+            print("=" * 60)
+            print("RUN %d of %d" % (i + 1, self.a.runs))
+            print("=" * 60)
+            self.reset_scoring()
+            t0 = time.time()
+            rc = self.fly_once(verbose=False)
+            worst = min((self.closest[k] for k in self.closest), default=float("inf"))
+            lat = max((abs(y) for _, y in self.track), default=0.0)
+            results.append({"rc": rc, "worst": worst, "lat": lat,
+                            "secs": time.time() - t0,
+                            "closest": dict(self.closest)})
+            print("  run %d: %s, worst clearance %.2f m, max deviation %.2f m"
+                  % (i + 1, "reached" if rc == 0 else "FAILED", worst, lat))
+            if i < self.a.runs - 1:
+                self.return_to_start()
+
+        print()
+        print("=" * 60)
+        print("BATCH SUMMARY -- %d runs" % len(results))
+        print("=" * 60)
+        print("  run   result    worst clearance   max deviation   time")
+        for i, r in enumerate(results, 1):
+            print("  %3d   %-8s  %13.2f m  %13.2f m  %5.0fs"
+                  % (i, "ok" if r["rc"] == 0 else "FAIL", r["worst"], r["lat"],
+                     r["secs"]))
+
+        reached = sum(1 for r in results if r["rc"] == 0)
+        worsts = [r["worst"] for r in results]
+        breaches = [i for i, r in enumerate(results, 1) if r["worst"] <= 0]
+
+        print()
+        print("  goal reached      : %d of %d" % (reached, len(results)))
+        print("  worst clearance   : %.2f m  (margin asked for %.2f m)"
+              % (min(worsts), self.a.margin))
+        print("  median clearance  : %.2f m" % sorted(worsts)[len(worsts) // 2])
+        print("  spread            : %.2f m to %.2f m" % (min(worsts), max(worsts)))
+        print("  collisions        : %d" % len(breaches))
+
+        # Which obstacle is the marginal one, across every run.
+        per_obs = []
+        for k, shp in enumerate(self.crs.shapes):
+            vals = [r["closest"][k] for r in results]
+            per_obs.append((min(vals), k, shp))
+        per_obs.sort()
+        print()
+        print("  tightest obstacles across all runs:")
+        for worst_d, k, shp in per_obs[:4]:
+            print("    obs_%-2d %-22s %6.2f m" % (k + 1, shp.describe(), worst_d))
+
+        ok = (reached == len(results)) and not breaches
+        print()
+        print("  GATE: %s" % ("PASSED -- %d runs, zero collisions" % len(results)
+                              if ok else "FAILED"))
+        return 0 if ok else 1
+
+    def fly_once(self, verbose=True):
+        gn, ge = self.crs.goal
+        print()
         print("priming proximity data ...")
         self.pump(3.0)
 
@@ -290,20 +397,23 @@ class Runner(object):
 
         print()
         print("%s" % ("GOAL REACHED" if reached else "TIMED OUT"))
-        max_lat = max((abs(y) for _, y in self.track), default=0.0)
-        print("max lateral deviation : %.2f m" % max_lat)
-        print("closest approach to each obstacle (surface distance):")
         worst, worst_i = 1e9, None
-        for i, shp in enumerate(self.crs.shapes):
-            d = self.closest[i]
-            if d < worst:
-                worst, worst_i = d, i + 1
-            flag = "  <-- BREACH" if d < 0 else ""
-            print("  obs_%-2d north %6.1f east %6.1f  %-22s %6.2f m%s"
-                  % (i + 1, shp.north, shp.east, shp.describe(), d, flag))
-        print()
-        print("worst clearance: %.2f m at obs_%s  (margin asked for: %.2f m)"
-              % (worst, worst_i, self.a.margin))
+        for i in range(len(self.crs.shapes)):
+            if self.closest[i] < worst:
+                worst, worst_i = self.closest[i], i + 1
+
+        if verbose:
+            max_lat = max((abs(y) for _, y in self.track), default=0.0)
+            print("max lateral deviation : %.2f m" % max_lat)
+            print("closest approach to each obstacle (surface distance):")
+            for i, shp in enumerate(self.crs.shapes):
+                d = self.closest[i]
+                flag = "  <-- BREACH" if d < 0 else ""
+                print("  obs_%-2d north %6.1f east %6.1f  %-22s %6.2f m%s"
+                      % (i + 1, shp.north, shp.east, shp.describe(), d, flag))
+            print()
+            print("worst clearance: %.2f m at obs_%s  (margin asked for: %.2f m)"
+                  % (worst, worst_i, self.a.margin))
         return 0 if (reached and worst > 0) else 1
 
 
@@ -330,6 +440,11 @@ def main():
                    help="only used for reporting; the autopilot's own value is "
                         "OA_MARGIN_MAX")
     p.add_argument("--timeout", type=float, default=260.0)
+    p.add_argument("--runs", type=int, default=1,
+                   help="fly the course this many times, returning to the "
+                        "start between them, and score them together. "
+                        "BendyRuler is not deterministic, so one clean "
+                        "flight proves very little.")
     p.add_argument("--arm-timeout", type=float, default=120.0)
     args = p.parse_args()
 
