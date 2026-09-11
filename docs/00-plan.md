@@ -126,17 +126,31 @@ Physics, not model quality. Design your test flights around these:
 
 ```
 Project-Alpha/
-├── README.md                        this file
-├── requirements.txt
 ├── docs/
-│   ├── 01-setup.md                  Steps 1-2: WSL2, ArduPilot SITL, Gazebo
-│   └── 02-ardupilot-params.md       the parameters that turn avoidance on
-└── src/
-    ├── check_avoidance_support.py   run first: does this firmware support it?
-    ├── fake_obstacle_publisher.py   Step 3
-    ├── obstacle_ring.py             shared ring format + MAVLink send
-    ├── depth_to_obstacle_ring.py    Step 4: depth image -> 72 sectors
-    └── test_depth_to_ring.py        self-tests, no hardware needed
+│   ├── 00-plan.md                   this file
+│   ├── 01-setup.md                  WSL2, ArduPilot SITL, Gazebo
+│   ├── 02-ardupilot-params.md       the parameters that turn avoidance on
+│   └── 03-gazebo.md                 running the sim, and every trap hit so far
+├── setup/
+│   └── wsl_setup.sh                 one-shot install: ArduPilot, Gazebo, ROS 2
+├── src/
+│   ├── course.py                    shapes, start/goal, ray-casting geometry
+│   ├── depth_to_obstacle_ring.py    depth image -> 72 sectors. Runs on the OAK-D too.
+│   ├── stereo_noise.py              derived stereo error model for testing filters
+│   ├── virtual_obstacle_publisher.py  ring from known positions, no sensor
+│   ├── fake_obstacle_publisher.py   body-frame wall; proves plumbing only
+│   ├── gz_depth_bridge.py           ROS 2 variant, unused -- gz bindings made it unnecessary
+│   ├── check_avoidance_support.py   does this firmware have OA_TYPE?
+│   └── test_*.py                    64 self-tests, no hardware or simulator needed
+└── sim/
+    ├── run_all.sh                   everything: world, Gazebo, SITL, params, fly
+    ├── run_course.py                publishes obstacles and flies the mission
+    ├── set_params.py                idempotent; eeprom.bin is per working directory
+    ├── ring_simulator.html          browser visualisation of the pipeline
+    └── gazebo/
+        ├── course.txt               the one course definition everything reads
+        ├── make_world.py            renders it, and bolts on the depth camera
+        └── spawn_course.sh          adds obstacles to a live world (see its warning)
 ```
 
 ## Trying it now
