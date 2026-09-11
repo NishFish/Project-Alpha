@@ -164,3 +164,75 @@ depth camera. A 2D scan maps onto the 72 sectors almost directly, needs no ROS,
 and still exercises ArduPilot's avoidance end to end. You lose the camera part
 of the pipeline in simulation, but you keep it on the real aircraft where it
 matters. Worth taking if ROS 2 setup starts eating weeks.
+
+## Troubleshooting: "nothing moves in Gazebo"
+
+Both of these cost an afternoon on 2026-09-11. Neither is a Gazebo fault.
+
+### The clock is running but the drone sits there
+
+First establish whether Gazebo is actually paused:
+
+```bash
+gz topic -e -t /world/iris_runway/clock -n 2
+```
+
+If `sim` seconds advance, Gazebo is fine and the problem is the autopilot. A
+disarmed multirotor does not move -- that is correct behaviour, not a fault.
+Check what the vehicle thinks:
+
+```
+mode      : STABILIZE
+ARMED     : False        <- nothing will move
+```
+
+A takeoff command in `STABILIZE` is ignored outright. The vehicle has to be in
+`GUIDED`, then armed, then commanded.
+
+### PreArm: Motors: Check frame class and type
+
+`FRAME_CLASS = 0` means the airframe is undefined, and ArduPilot refuses to
+arm. Set `FRAME_CLASS = 1` (quad) and `FRAME_TYPE = 1` (X), then **reboot the
+autopilot** -- `FRAME_CLASS` is not applied until restart.
+
+### PreArm: PRX1: No Data
+
+This one is a consequence of doing the right thing. Once `PRX1_TYPE = 2`,
+ArduPilot expects proximity data and will not arm without it. So the ordering
+is:
+
+1. Start `fake_obstacle_publisher.py`
+2. *Then* arm
+
+Not the other way round. Worth knowing now, because the real aircraft behaves
+identically -- the companion computer must be alive and publishing before the
+aircraft will arm.
+
+### Two clients cannot share UDP 14551
+
+The publisher binds `udpin:127.0.0.1:14551`. Anything else wanting a MAVLink
+link needs a different endpoint. SITL exposes spare TCP ports for exactly this:
+
+```
+tcp:127.0.0.1:5762
+tcp:127.0.0.1:5763
+```
+
+Those ports stream **nothing** until a client asks, so a connection there
+reporting `nan` altitude is not a grounded aircraft -- it is a client that never
+requested data:
+
+```python
+m.mav.request_data_stream_send(m.target_system, m.target_component,
+                               mavutil.mavlink.MAV_DATA_STREAM_ALL, 4, 1)
+```
+
+### Confirm from Gazebo's side, not the autopilot's
+
+The definitive check, since with `--model JSON` the physics come from Gazebo:
+
+```bash
+gz topic -e -t /world/iris_runway/dynamic_pose/info -n 1 | grep -A12 'name: "iris'
+```
+
+A `z` of 10.19 means the model really is ten metres up.

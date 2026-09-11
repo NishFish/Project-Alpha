@@ -48,3 +48,31 @@ Wire the Pi to the Pixhawk's **TELEM2** port.
 Remember the failure mode: if the Pi stops sending, ArduPilot discards the stale
 data and **carries on with no avoidance**. The geofence and the speed cap are
 what protect you when that happens, so do not treat them as optional.
+
+## Parameter names differ between firmware versions
+
+Verified on SITL running ArduCopter **4.8.0-dev**, 2026-09-11: the `WPNAV_*`
+family does not exist there at all. A full parameter dump returned 1414 entries
+and not one `WPNAV_` among them. Speeds were renamed and their units changed
+from cm/s to m/s:
+
+| Old (stable releases) | 4.8-dev | Units |
+|---|---|---|
+| `WPNAV_SPEED = 200` | `WP_SPD = 2` | cm/s -> m/s |
+| `WPNAV_ACCEL` | `WP_ACCEL` | cm/s^2 -> m/s^2 |
+| `LOIT_SPEED` | `LOIT_SPEED_MS` | cm/s -> m/s |
+
+The `_MS` suffix is the tell: it means the value is in metres per second.
+
+Which matters for you because **SITL and your Pixhawk will not be on the same
+firmware.** SITL builds from ArduPilot master; the board will run a stable
+release. If a parameter here is rejected, dump the list and grep rather than
+guessing:
+
+```python
+m.mav.param_request_list_send(m.target_system, m.target_component)
+# collect PARAM_VALUE messages, then grep the names
+```
+
+Set the value you mean, in the units that firmware uses. 2 m/s is 2 m/s either
+way -- only the number you type changes.
