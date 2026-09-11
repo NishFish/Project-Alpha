@@ -49,11 +49,24 @@ Each step has a gate. Don't move on until it passes.
       **This was the most important step in the project.** The hard part is done;
       everything after is swapping fake numbers for real ones.
 
-- [ ] **4. Fake camera.** Add a depth camera to the simulator and feed its output
+- [x] **4. Fake camera.** **PASSED 2026-09-11.** Add a depth camera to the simulator and feed its output
       through `src/depth_to_obstacle_ring.py`, which emits the same message.
       The conversion is written and unit-tested; what remains is wiring it to a
       real depth source.
       *Gate: avoids a simulated wall it actually "saw", 10 runs, zero collisions.*
+
+      Done with a real Gazebo depth camera (72 deg, 320x240, 0.2-20 m) through
+      `src/depth_to_obstacle_ring.py`, the same file that will run on the OAK-D.
+      The flight loop is given no obstacle positions at all.
+
+      **10 of 10 runs reached the goal, zero collisions**, with stereo noise
+      enabled. Worst clearance 2.61 m against a 2.00 m margin, median 2.82 m,
+      spread only 2.61-2.99 m. Course included pillars, a 22 m angled wall and
+      an L-shaped pocket.
+
+          bash sim/run_all.sh --noise
+          python3 sim/run_course.py --source depth --min-range 1.5 --noise --runs 10
+
 
 - [ ] **5. Buy hardware, test on the desk.** Raspberry Pi 5 + OAK-D Lite. No drone.
       *Gate: camera distance readings match a tape measure at 1, 2 and 4 m.*

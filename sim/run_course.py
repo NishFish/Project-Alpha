@@ -222,38 +222,34 @@ class Runner(object):
         self.texts = []
 
     def return_to_start(self):
-        """Fly back to the start marker and land, ready for another run.
+        """Fly home and land, ready for another run. Returns True on success.
 
-        The return leg is flown in GUIDED with avoidance still active, so it is
-        a second pass over the course rather than dead time -- and it is scored
-        nowhere, which is deliberate: a run means start to goal.
+        Uses RTL rather than a hand-rolled goto-then-land. The first version of
+        this landed wherever it happened to be once its timeout expired, which
+        put the aircraft against a wall at 68 degrees nose-up and made every
+        subsequent run fail `Arm: Leaning` without moving. Landing anywhere but
+        home is never the right answer -- if it cannot get back, the batch has
+        to stop and say so.
+
+        The return leg keeps avoidance live, and is deliberately not scored: a
+        run means start to goal.
         """
         sn, se = self.crs.start
-        print("  returning to start ...")
-        self.m.set_mode_apm("GUIDED")
+        print("  RTL ...")
+        self.m.set_mode_apm("RTL")
         self.pump(2.0)
 
-        deadline = time.time() + 200.0
-        while time.time() < deadline:
-            self.m.mav.set_position_target_local_ned_send(
-                0, self.m.target_system, self.m.target_component,
-                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
-                0b0000111111111000,
-                sn, se, -self.a.alt, 0, 0, 0, 0, 0, 0, 0, 0)
-            if self.pump(3.0,
-                         until=lambda: math.hypot(sn - self.x, se - self.y) < 4.0):
-                break
-        print("  back at N %.1f E %.1f, landing" % (self.x, self.y))
+        if not self.pump(self.a.rtl_timeout, until=lambda: not self.armed):
+            print("  RTL did not finish within %.0f s" % self.a.rtl_timeout)
+            return False
 
-        self.m.set_mode_apm("LAND")
-        if not self.pump(90.0, until=lambda: not self.armed):
-            print("  did not disarm; forcing")
-            self.m.mav.command_long_send(
-                self.m.target_system, self.m.target_component,
-                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                0, 0, 0, 0, 0, 0, 0, 21196)     # 21196 = force disarm
-            self.pump(10.0, until=lambda: not self.armed)
-        print("  disarmed at %.1f m" % -self.z)
+        drift = math.hypot(sn - self.x, se - self.y)
+        print("  disarmed at N %.1f E %.1f, %.1f m from start" % (self.x, self.y, drift))
+        if drift > self.a.home_tolerance:
+            print("  landed %.1f m from the start (tolerance %.1f m)"
+                  % (drift, self.a.home_tolerance))
+            return False
+        return True
 
     # -- run ---------------------------------------------------------------
     def run(self):
@@ -297,7 +293,18 @@ class Runner(object):
             print("  run %d: %s, worst clearance %.2f m, max deviation %.2f m"
                   % (i + 1, "reached" if rc == 0 else "FAILED", worst, lat))
             if i < self.a.runs - 1:
-                self.return_to_start()
+                if not self.return_to_start():
+                    # Continuing from a bad position produces a column of
+                    # identical bogus failures that look like an avoidance
+                    # problem and are not. Stop and say what happened.
+                    print()
+                    print("  ABORTING after run %d: could not get back to the "
+                          "start." % (i + 1))
+                    print("  The aircraft is at N %.1f E %.1f, %.1f m from the "
+                          "nearest obstacle surface."
+                          % (self.x, self.y, self.crs.nearest_surface(self.x, self.y)))
+                    print("  Restart the simulator before running again.")
+                    break
 
         print()
         print("=" * 60)
@@ -340,6 +347,11 @@ class Runner(object):
 
     def fly_once(self, verbose=True):
         gn, ge = self.crs.goal
+        near = self.crs.nearest_surface(self.x, self.y)
+        if near < 1.0:
+            print("  refusing to start: the aircraft is %.2f m from an "
+                  "obstacle surface at N %.1f E %.1f" % (near, self.x, self.y))
+            return 1
         print()
         print("priming proximity data ...")
         self.pump(3.0)
@@ -445,6 +457,11 @@ def main():
                         "start between them, and score them together. "
                         "BendyRuler is not deterministic, so one clean "
                         "flight proves very little.")
+    p.add_argument("--rtl-timeout", type=float, default=240.0,
+                   help="how long RTL gets to fly home and land between runs")
+    p.add_argument("--home-tolerance", type=float, default=8.0,
+                   help="how far from the start a landing may be and still "
+                        "count as home")
     p.add_argument("--arm-timeout", type=float, default=120.0)
     args = p.parse_args()
 

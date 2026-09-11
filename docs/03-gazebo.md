@@ -471,3 +471,50 @@ Worth watching in that run: faced with the L at 96-103 m, the aircraft went
 around the outside rather than into the mouth of it. That is luck as much as
 planning -- BendyRuler has no map and no memory, so a deeper concave trap can
 still steer it in and only then reveal that it has to come back out.
+
+## Batch runs, and what ten of them showed
+
+```bash
+python3 sim/run_course.py --source depth --min-range 1.5 --noise --runs 10
+```
+
+**2026-09-11: 10 of 10 reached the goal, zero collisions.** Worst clearance
+2.61 m against a 2.00 m margin, median 2.82 m, spread 2.61-2.99 m, max lateral
+deviation 11.6-14.4 m. Tightest obstacle across every run was obs_3, one of the
+gate pillars, at 2.61 m.
+
+The clearance spread is far tighter than the lateral deviation spread. Where the
+aircraft goes varies by nearly 3 m between runs; how close it gets to anything
+barely varies at all. That is the margin doing its job, and it is the number to
+watch when tuning -- a change that improves the average path but drops worst
+clearance is a bad change.
+
+### Never land anywhere but home
+
+The first batch attempt scored one good run and nine identical failures. The
+harness was at fault: `return_to_start` landed wherever the aircraft happened to
+be once its timeout expired. It put the aircraft against a wall at 68 degrees
+nose-up, and every later run failed `Arm: Leaning` without moving -- a column of
+bogus numbers that looked exactly like an avoidance problem.
+
+Underneath that was a genuine finding. Flying *south* from the goal, obs_5 and
+obs_6 form a pocket opening northward, and BendyRuler flew into the mouth of it
+and could not get out. Concave traps are the documented weakness of reactive
+planners and this is what one looks like: the forward direction was fine every
+single time, the reverse was not.
+
+Two fixes: use ArduPilot's own **RTL** between runs rather than a hand-rolled
+goto-then-land, and abort the batch if the aircraft ends more than
+`--home-tolerance` metres from the start. `fly_once` also now refuses to begin
+within 1 m of an obstacle surface.
+
+### RTL succeeded where the direct return failed
+
+RTL landed at exactly N 0.0 E 0.0 on all nine returns, through the same
+obstacles that trapped the direct route. It climbs to `RTL_ALT` first and flies
+home above the obstacles rather than between them.
+
+Note the margin there: `RTL_ALT` defaults to 15 m and these pillars are 14 m
+tall. One metre. **On the real aircraft, set `RTL_ALT` clearly above the tallest
+thing you expect to meet** -- RTL is your failsafe, and a failsafe that flies
+into a tree is not one.
