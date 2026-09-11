@@ -299,3 +299,36 @@ The first attempt is normally refused with `Accels inconsistent` or
 `GPS 1 still configuring this GPS`. The EKF is still aligning and the GPS driver
 still probing; both clear within a minute. `run_course.py` retries for
 `--arm-timeout` seconds rather than treating the first refusal as fatal.
+
+## One command for all of it
+
+```bash
+bash sim/run_all.sh
+```
+
+Stops anything running, regenerates the world from `course.txt`, starts Gazebo,
+starts SITL, applies the parameters, and flies the course. About four minutes,
+most of it the flight. Gazebo and SITL are left running afterwards.
+
+Every step in that script exists because of something that broke without it:
+explicit `GZ_SIM_*` exports, `--no-mavproxy`, a fixed working directory for
+`eeprom.bin`, waiting on the Gazebo clock and on port 5760 rather than sleeping
+a guessed interval, and re-applying parameters on every startup.
+
+### The route is not identical run to run
+
+Two runs of the same course, same parameters:
+
+| | run 1 | run 2 |
+|---|---|---|
+| max lateral deviation | 5.26 m | 11.38 m |
+| clearance, obs_6 | 5.60 m | 14.69 m |
+| worst clearance | 2.97 m | 3.06 m |
+
+Run 1 threaded the gate at 95 m; run 2 went around the west side of it
+entirely. Both are valid, both cleared every pillar by more than the 2 m margin.
+BendyRuler searches from the current heading and state, so small timing
+differences pick a different branch.
+
+Which means **a single run proves very little.** Judge a change by worst
+clearance over many runs, not by whether one flight looked tidy.
