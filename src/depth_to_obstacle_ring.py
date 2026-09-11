@@ -121,6 +121,12 @@ class DepthToRing:
             self.last_stats = {"valid_px": 0, "in_band_px": 0, "sectors": 0}
             return empty_ring(self.max_cm)
 
+        # Neutralise the rejected pixels before any arithmetic. Gazebo reports
+        # the sky as +inf, and 0 * inf is NaN, which raises warnings and then
+        # quietly fails every comparison it touches. They are excluded by `valid`
+        # anyway, so their value is irrelevant -- it just has to be finite.
+        depth = np.where(valid, depth, 0.0)
+
         x = self._ax * depth
         y = self._ay * depth
         z = depth

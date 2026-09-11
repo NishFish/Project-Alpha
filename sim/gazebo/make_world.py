@@ -1,36 +1,60 @@
 #!/usr/bin/env python3
 """
-Build a Gazebo world with the obstacle course baked in.
-
-Spawning obstacles into a world that already has an aircraft flying in it is a
-good way to knock the aircraft down -- a static 14 m pillar appearing around a
-hovering drone simply shoves it out of the sky. Putting the pillars in the world
-file instead means they exist before anything takes off, and they are visible
-from the moment Gazebo opens.
+Build a Gazebo world with the obstacle course baked in and a depth camera bolted
+to the aircraft.
 
     python3 sim/gazebo/make_world.py
     gz sim -v4 -r sim/gazebo/obstacle_course.sdf
 
-Reads the same course.txt the publisher reads, so the geometry the aircraft
-sees and the geometry you see can never drift apart.
+Two jobs:
 
-Coordinate note, measured rather than assumed: this world frame is ENU, so
-Gazebo x is EAST and Gazebo y is NORTH, while ArduPilot's LOCAL_POSITION_NED is
-x=north, y=east. course.txt is written in ArduPilot's convention, so north and
-east get swapped on the way in.
+1. Pillars from course.txt, as visible geometry. Spawning obstacles into a world
+   that already has something flying in it shoves the aircraft out of the sky, so
+   they belong in the world file.
+
+2. A forward-facing depth camera on the airframe, matched to the OAK-D Lite:
+   72 degrees horizontal, 0.2-20 m. This is what makes real detection possible --
+   the aircraft finds the pillars by looking at them rather than being told where
+   they are.
+
+The drone is spliced in by INLINING iris_with_gimbal's model rather than wrapping
+it in another model. Wrapping adds a nesting level, and the ArduPilot plugin
+inside that model refers to its links by relative name (iris_with_standoffs::
+rotor_0), so the less its structure changes the better. Inlining keeps the model
+name, nesting depth and every internal reference byte-identical, and adds exactly
+one link and one joint.
+
+Camera orientation: the world includes the drone with a 90 degree yaw, and the
+aircraft flies toward world +Y (north) at ArduPilot yaw 0, so the model's +X axis
+is the nose. Gazebo cameras look along their own +X, so an unrotated sensor on
+base_link faces forward with no rotation needed.
 """
 
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BASE = os.path.expanduser("~/gz_ws/src/ardupilot_gazebo/worlds/iris_runway.sdf")
+GZ_WS = os.path.expanduser("~/gz_ws/src/ardupilot_gazebo")
+BASE_WORLD = os.path.join(GZ_WS, "worlds", "iris_runway.sdf")
+DRONE_MODEL = os.path.join(GZ_WS, "models", "iris_with_gimbal", "model.sdf")
 COURSE = os.path.join(HERE, "course.txt")
 OUT = os.path.join(HERE, "obstacle_course.sdf")
 
 PILLAR_HEIGHT = 14.0
 
-TEMPLATE = """
+# Matched to the OAK-D Lite so the simulated sensor lies about the same things
+# the real one will. Resolution is deliberately low: 320x240 at 15 Hz is plenty
+# for a 72-sector ring and keeps the Python side comfortably real-time.
+CAM_FOV_DEG = 72.0
+CAM_WIDTH = 320
+CAM_HEIGHT = 240
+CAM_NEAR = 0.2
+CAM_FAR = 20.0
+CAM_RATE = 15
+CAM_TOPIC = "depth_camera"
+
+PILLAR = """
     <model name="obs_{n}">
       <static>true</static>
       <pose>{east} {north} {z} 0 0 0</pose>
@@ -50,6 +74,52 @@ TEMPLATE = """
     </model>
 """
 
+DEPTH_CAMERA = """
+      <!-- Added by make_world.py: forward-facing depth camera, OAK-D Lite class.
+           Gazebo cameras look along +X, and the model's +X is the nose, so no
+           rotation is needed here. -->
+      <link name="depth_link">
+        <pose>0.12 0 0.03 0 0 0</pose>
+        <inertial>
+          <mass>0.02</mass>
+          <inertia>
+            <ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <visual name="visual">
+          <geometry><box><size>0.03 0.09 0.02</size></box></geometry>
+          <material>
+            <ambient>0.05 0.05 0.05 1</ambient>
+            <diffuse>0.12 0.12 0.12 1</diffuse>
+          </material>
+        </visual>
+        <sensor name="depth_camera" type="depth_camera">
+          <always_on>1</always_on>
+          <update_rate>{rate}</update_rate>
+          <visualize>true</visualize>
+          <topic>{topic}</topic>
+          <camera>
+            <horizontal_fov>{fov_rad:.6f}</horizontal_fov>
+            <image>
+              <width>{width}</width>
+              <height>{height}</height>
+              <format>R_FLOAT32</format>
+            </image>
+            <clip>
+              <near>{near}</near>
+              <far>{far}</far>
+            </clip>
+          </camera>
+        </sensor>
+      </link>
+
+      <joint name="depth_joint" type="fixed">
+        <parent>iris_with_standoffs::base_link</parent>
+        <child>depth_link</child>
+      </joint>
+"""
+
 
 def read_course(path):
     obstacles = []
@@ -66,34 +136,67 @@ def read_course(path):
     return obstacles
 
 
-def main():
-    if not os.path.exists(BASE):
-        sys.exit("base world not found: %s\n"
-                 "Run setup/wsl_setup.sh plugin first." % BASE)
+def drone_with_camera():
+    """iris_with_gimbal's model block, with a depth camera link and joint added."""
+    text = open(DRONE_MODEL).read()
 
-    world = open(BASE).read()
+    m = re.search(r"(<model\b.*?</model>)", text, re.S)
+    if not m:
+        sys.exit("no <model> found in %s" % DRONE_MODEL)
+    model = m.group(1)
+
+    sensor = DEPTH_CAMERA.format(
+        rate=CAM_RATE, topic=CAM_TOPIC,
+        fov_rad=CAM_FOV_DEG * 3.141592653589793 / 180.0,
+        width=CAM_WIDTH, height=CAM_HEIGHT, near=CAM_NEAR, far=CAM_FAR)
+
+    idx = model.rindex("</model>")
+    return model[:idx] + sensor + model[idx:]
+
+
+def main():
+    for path in (BASE_WORLD, DRONE_MODEL):
+        if not os.path.exists(path):
+            sys.exit("not found: %s\nRun setup/wsl_setup.sh plugin first." % path)
+
+    world = open(BASE_WORLD).read()
     obstacles = read_course(COURSE)
 
-    blocks = "".join(
-        TEMPLATE.format(n=i + 1, east=east, north=north, z=PILLAR_HEIGHT / 2.0,
-                        r=radius, h=PILLAR_HEIGHT)
+    # Replace the <include> of the drone with the inlined model, carrying the
+    # include's own pose across onto the model.
+    inc = re.search(
+        r"[ \t]*<include>\s*<uri>model://iris_with_gimbal</uri>\s*"
+        r"(<pose[^>]*>[^<]*</pose>)?\s*</include>", world, re.S)
+    if not inc:
+        sys.exit("could not find the iris_with_gimbal <include> in %s" % BASE_WORLD)
+
+    pose = inc.group(1) or '<pose degrees="true">0 0 0.195 0 0 90</pose>'
+    model = drone_with_camera()
+    open_tag = re.search(r"<model\b[^>]*>", model).group(0)
+    model = model.replace(open_tag, open_tag + "\n      " + pose, 1)
+
+    world = world[:inc.start()] + "    " + model + world[inc.end():]
+
+    pillars = "".join(
+        PILLAR.format(n=i + 1, east=east, north=north, z=PILLAR_HEIGHT / 2.0,
+                      r=radius, h=PILLAR_HEIGHT)
         for i, (north, east, radius) in enumerate(obstacles))
 
-    marker = "</world>"
-    if marker not in world:
-        sys.exit("no </world> in %s -- cannot splice" % BASE)
-    idx = world.rindex(marker)
-    out = world[:idx] + blocks + world[idx:]
+    idx = world.rindex("</world>")
+    world = world[:idx] + pillars + world[idx:]
 
     with open(OUT, "w") as fh:
-        fh.write(out)
+        fh.write(world)
 
-    print("base   : %s" % BASE)
-    print("course : %d pillars from %s" % (len(obstacles), COURSE))
+    print("base world : %s" % BASE_WORLD)
+    print("drone      : inlined from %s" % DRONE_MODEL)
+    print("depth cam  : %.0f deg, %dx%d, %.1f-%.1f m, %d Hz on /%s"
+          % (CAM_FOV_DEG, CAM_WIDTH, CAM_HEIGHT, CAM_NEAR, CAM_FAR,
+             CAM_RATE, CAM_TOPIC))
+    print("course     : %d pillars" % len(obstacles))
     for i, (north, east, radius) in enumerate(obstacles, 1):
         print("  obs_%-2d north %6.1f  east %6.1f  r %.1f" % (i, north, east, radius))
-    print("wrote  : %s" % OUT)
-    print("\nlaunch with:\n  gz sim -v4 -r %s" % OUT)
+    print("wrote      : %s" % OUT)
 
 
 if __name__ == "__main__":

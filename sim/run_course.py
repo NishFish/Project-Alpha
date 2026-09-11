@@ -59,6 +59,7 @@ class Runner(object):
         self.a = args
         self.obstacles = read_course(args.course)
         self.x = self.y = self.z = self.yaw = 0.0
+        self.pitch = self.roll = 0.0
         self.armed = False
         self.texts = []
         self.track = []
@@ -88,15 +89,71 @@ class Runner(object):
                         self.closest[i] = d
             elif t == "ATTITUDE":
                 self.yaw = msg.yaw
+                self.pitch = msg.pitch
+                self.roll = msg.roll
             elif t == "HEARTBEAT" and msg.get_srcComponent() == 1:
                 self.armed = bool(msg.base_mode &
                                   mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
             elif t == "STATUSTEXT":
                 self.texts.append(msg.text)
 
+    # -- perception --------------------------------------------------------
+    def start_depth(self):
+        """Subscribe to the Gazebo depth camera and set up the real conversion.
+
+        This is the switch from "told where the obstacles are" to "worked it out
+        by looking". Nothing downstream changes: the same OBSTACLE_DISTANCE ring
+        goes out, and ArduPilot cannot tell the difference.
+
+        Gazebo's Python bindings ship with gz-harmonic, so no ROS is involved.
+        """
+        import numpy as np
+        from gz.transport13 import Node
+        from gz.msgs10.image_pb2 import Image
+
+        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "src"))
+        from depth_to_obstacle_ring import DepthToRing
+
+        self._np = np
+        self._frame = None
+
+        w, h = self.a.cam_width, self.a.cam_height
+        fx = (w / 2.0) / math.tan(math.radians(self.a.fov) / 2.0)
+        self.converter = DepthToRing(
+            fx, fx, (w - 1) / 2.0, (h - 1) / 2.0, w, h,
+            min_range_m=self.a.min_range, max_range_m=self.a.max_range,
+            height_band_m=self.a.height_band, stride=2)
+
+        def on_image(msg):
+            if msg.width == w and msg.height == h:
+                self._frame = msg.data
+
+        self._node = Node()
+        if not self._node.subscribe(Image, self.a.topic, on_image):
+            sys.exit("could not subscribe to %s" % self.a.topic)
+        print("subscribed to %s (%dx%d, fx=%.1f)" % (self.a.topic, w, h, fx))
+
+        t0 = time.time()
+        while self._frame is None and time.time() - t0 < 15:
+            time.sleep(0.2)
+        if self._frame is None:
+            sys.exit("no depth frames on %s -- is Gazebo running the "
+                     "obstacle_course world?" % self.a.topic)
+        print("first depth frame received\n")
+
+    def ring_from_depth(self):
+        depth = self._np.frombuffer(self._frame, dtype=self._np.float32).reshape(
+            self.a.cam_height, self.a.cam_width)
+        ring = self.converter.process(depth, pitch_rad=self.pitch,
+                                      roll_rad=self.roll)
+        return ring, self.converter.min_cm, self.converter.max_cm
+
     def publish(self):
-        ring, min_cm, max_cm = build_ring(self.obstacles, self.x, self.y, self.yaw,
-                                          self.a.fov, 0.2, self.a.max_range)
+        if self.a.source == "depth":
+            ring, min_cm, max_cm = self.ring_from_depth()
+        else:
+            ring, min_cm, max_cm = build_ring(self.obstacles, self.x, self.y, self.yaw,
+                                              self.a.fov, 0.2, self.a.max_range)
         self.m.mav.obstacle_distance_send(
             int(time.monotonic() * 1e6),
             mavutil.mavlink.MAV_DISTANCE_SENSOR_LASER,
@@ -172,6 +229,12 @@ class Runner(object):
         print("mission: straight to %.0f m north at %.0f m altitude" %
               (self.a.north, self.a.alt))
         print("sensor : %.0f deg FOV, %.0f m range\n" % (self.a.fov, self.a.max_range))
+
+        if self.a.source == "depth":
+            print("perception: REAL depth camera, no obstacle positions given")
+            self.start_depth()
+        else:
+            print("perception: virtual, computed from known obstacle positions\n")
 
         print("priming proximity data ...")
         self.pump(3.0)
@@ -249,6 +312,16 @@ def main():
     p.add_argument("--fov", type=float, default=72.0)
     p.add_argument("--max-range", type=float, default=20.0)
     p.add_argument("--timeout", type=float, default=200.0)
+    p.add_argument("--source", choices=("virtual", "depth"), default="virtual",
+                   help="virtual = obstacle positions from course.txt (geometry "
+                        "only, no sensing); depth = a real Gazebo depth camera "
+                        "through depth_to_obstacle_ring.py, with no knowledge of "
+                        "where anything is")
+    p.add_argument("--topic", default="/depth_camera")
+    p.add_argument("--cam-width", type=int, default=320)
+    p.add_argument("--cam-height", type=int, default=240)
+    p.add_argument("--min-range", type=float, default=0.5)
+    p.add_argument("--height-band", type=float, default=0.5)
     p.add_argument("--arm-timeout", type=float, default=120.0,
                    help="how long to keep retrying the arm while the EKF settles")
     sys.exit(Runner(p.parse_args()).run())

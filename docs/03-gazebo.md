@@ -332,3 +332,71 @@ differences pick a different branch.
 
 Which means **a single run proves very little.** Judge a change by worst
 clearance over many runs, not by whether one flight looked tidy.
+
+## Real detection, no predetermined positions
+
+`make_world.py` bolts a forward-facing depth camera to the airframe -- 72
+degrees, 320x240, 0.2-20 m at 15 Hz, matched to the OAK-D Lite. Then:
+
+```bash
+bash sim/run_all.sh --depth
+# or directly:
+python3 sim/run_course.py --source depth --min-range 1.5
+```
+
+With `--source depth` the flight loop is told nothing about where the pillars
+are. It subscribes to the Gazebo depth image, runs it through
+`src/depth_to_obstacle_ring.py` -- the same file that will run on the real
+OAK-D -- and publishes the result. `course.txt` is still read, but only to score
+the run afterwards.
+
+**Result, 2026-09-11:** all seven pillars cleared, worst clearance 2.82 m
+against a 2.00 m margin, max lateral deviation 4.97 m, waypoint reached.
+
+### Gazebo's Python bindings remove the need for ROS
+
+`python3-gz-transport13` and `python3-gz-msgs10` arrive with `gz-harmonic` and
+are importable straight away:
+
+```python
+from gz.transport13 import Node
+from gz.msgs10.image_pb2 import Image
+node = Node()
+node.subscribe(Image, "/depth_camera", callback)
+```
+
+Depth frames arrive as `float32` metres, one per pixel, with `+inf` for anything
+beyond the far clip. This is far simpler than the ROS 2 bridge route described
+earlier in this document, and it is what `run_course.py --source depth` uses.
+
+### The camera is inlined into the model, not wrapped around it
+
+`make_world.py` splices the depth camera into `iris_with_gimbal`'s own model
+block rather than wrapping that model inside another. The ArduPilot plugin lives
+in that model and refers to its links by relative name
+(`iris_with_standoffs::rotor_0`), so adding a nesting level risks breaking
+references that currently work. Inlining keeps the model name, nesting depth and
+every internal reference identical and adds exactly one link and one joint.
+
+Orientation: the world includes the drone with a 90 degree yaw and it flies
+toward world +Y at ArduPilot yaw 0, so the model's +X is the nose. Gazebo
+cameras look along their own +X, so the sensor needs no rotation.
+
+### The ground is an obstacle when you are on the ground
+
+The first `--source depth` attempt would not arm:
+
+```
+PreArm: Proximity 355 deg, 0.55m (want > 0.6m)
+```
+
+The camera sits 0.22 m above the runway, so the ground falls inside the +/-0.5 m
+height band and reads as an obstacle half a metre ahead. ArduPilot is right to
+refuse. The virtual source never hit this because it only ever knew about
+pillars -- which is precisely the class of problem real perception introduces.
+
+`--min-range 1.5` clears it: the nearest ground return moves out to about 1.6 m,
+past the 0.6 m gate, and once airborne the ground leaves the height band
+entirely. Real stereo has a minimum range anyway, so this is not a fudge -- but
+be aware it blinds you inside 1.5 m. On the real aircraft, tilting the camera a
+few degrees up is the better fix.
