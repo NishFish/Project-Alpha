@@ -68,10 +68,13 @@ python3 "$PROJ/sim/set_params.py" || die "parameters"
 
 step "Flying the course"
 # Pass --depth to fly on the simulated camera instead of computed geometry.
-if [ "${1:-}" = "--depth" ]; then
-  python3 -u "$PROJ/sim/run_course.py" --source depth --min-range 1.5
-else
-  python3 -u "$PROJ/sim/run_course.py"
+case "${1:-}" in
+  --depth)  python3 -u "$PROJ/sim/run_course.py" --source depth --min-range 1.5 ;;
+  --noise)  python3 -u "$PROJ/sim/run_course.py" --source depth --min-range 1.5 --noise ;;
+  *)        python3 -u "$PROJ/sim/run_course.py" ;;
+esac
+if false; then
+  :
 fi
 rc=$?
 

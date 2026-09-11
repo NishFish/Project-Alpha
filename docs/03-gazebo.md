@@ -400,3 +400,74 @@ past the 0.6 m gate, and once airborne the ground leaves the height band
 entirely. Real stereo has a minimum range anyway, so this is not a fudge -- but
 be aware it blinds you inside 1.5 m. On the real aircraft, tilting the camera a
 few degrees up is the better fix.
+
+## Course format, markers, and complex shapes
+
+`sim/gazebo/course.txt` is now typed, and `src/course.py` is the single place
+that knows what the shapes mean. Three consumers read it and therefore cannot
+disagree: the world generator renders it, the virtual publisher ray-casts it,
+and the course runner flies to its goal and scores clearances against it.
+
+```
+start  <north> <east>
+goal   <north> <east>
+cyl    <north> <east> <radius>
+box    <north> <east> <size_north> <size_east> <yaw_deg>
+```
+
+A wall is a long thin box. An L or a U is two or three of them. Yaw is clockwise
+from north, compass style; Gazebo is ENU and wants the opposite sign, and that
+conversion happens in exactly one place in `make_world.py`.
+
+**Start and goal are drawn as flat discs** -- green at the start, red at the
+goal. They are visual only, with no collision geometry, and they lie flat on the
+ground on purpose: a vertical marker would be seen by the depth camera and
+avoided as an obstacle, and at cruise altitude the ground is far outside the
+height band so a flat one is invisible to the sensor.
+
+Angular extents only work for circles, so `ring_from_course` ray-casts instead,
+three rays per sector. A thin wall falling between two sector centres is
+therefore possible -- which is a real sensor failure mode too, just at a finer
+scale.
+
+## Stereo noise
+
+Gazebo's depth is perfect. That makes the percentile aggregation and temporal
+median in `depth_to_obstacle_ring.py` look like dead weight, because in a
+noiseless world they are.
+
+`src/stereo_noise.py` corrupts the frame first, using a derived model rather
+than an invented one. Depth comes from disparity, z = f*B/d, so
+
+    dz = z^2 * dd / (f * B)
+
+With the OAK-D Lite's 75 mm baseline, our 220 px focal length and 0.2 px of
+disparity error:
+
+| range | 1 sigma error |
+|---|---|
+| 2 m | 0.05 m |
+| 5 m | 0.30 m |
+| 10 m | 1.21 m |
+| 20 m | 4.85 m |
+
+The quadratic term is the point: a camera that is accurate at 2 m is nearly
+useless at 20 m, which is exactly why the speed cap matters.
+
+Dropouts are modelled as **blobs, not speckle**. Real stereo fails over regions
+without texture, and a blob that wipes out most of a sector is a completely
+different problem from scattered bad pixels that a percentile shrugs off.
+
+```bash
+python3 sim/run_course.py --source depth --min-range 1.5 --noise --seed 42
+bash sim/run_all.sh --noise
+```
+
+**Result, 2026-09-11:** goal reached, all eight obstacles cleared, worst
+clearance 2.81 m against a 2.00 m margin, max lateral deviation 11.34 m. The
+filters hold up under a physically derived noise model.
+
+Worth watching in that run: faced with the L at 96-103 m, the aircraft went
+around the outside rather than into the mouth of it. That is luck as much as
+planning -- BendyRuler has no map and no memory, so a deeper concave trap can
+still steer it in and only then reveal that it has to come back out.

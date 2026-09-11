@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 """
-Fly the obstacle course in SITL, publishing the obstacles and flying the mission
+Fly the obstacle course in SITL, publishing obstacle data and flying the mission
 over a single MAVLink connection.
 
-Earlier attempts split these into two processes on two ports, which needs SITL's
-spare TCP ports (5762/5763) to exist -- and they do not always. One connection
-driven by one 10 Hz loop avoids the problem entirely, and pymavlink connections
-are not thread-safe anyway, so single-threaded is the right shape regardless.
+    python3 sim/run_course.py                          # computed geometry
+    python3 sim/run_course.py --source depth --min-range 1.5    # real camera
+    python3 sim/run_course.py --source depth --min-range 1.5 --noise
 
-    python3 sim/run_course.py
+Two perception sources, the same everything else:
 
-What it does, in order: upload a straight mission through the course, arm (which
-requires proximity data to already be flowing -- see docs/03-gazebo.md), take
-off, switch to AUTO, then log the track and measure how close it came to every
-pillar.
+  virtual  the ring is computed from known obstacle positions. Proves the
+           control path without involving a sensor at all.
+  depth    a Gazebo depth camera through src/depth_to_obstacle_ring.py -- the
+           same file that will run on the real OAK-D. The flight loop is told
+           nothing about where anything is; course.txt is read only to score
+           the run afterwards.
 
-The obstacles must match what Gazebo is showing. Both read sim/gazebo/course.txt,
-so they cannot drift apart; regenerate the world with make_world.py after editing
-it.
+--noise corrupts the depth frame with a derived stereo error model before the
+conversion sees it. Gazebo's depth is perfect, which makes the percentile and
+temporal filters look pointless; they are not, and this is where that gets
+tested.
+
+One connection, one 10 Hz loop. Splitting the publisher and the controller across
+two ports needs SITL's spare 5762/5763, which do not always exist, and pymavlink
+connections are not thread-safe anyway.
 """
 
 import argparse
@@ -29,46 +35,29 @@ import time
 from pymavlink import mavutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "src"))
+SRC = os.path.join(os.path.dirname(HERE), "src")
+sys.path.insert(0, SRC)
 
-_vop = os.path.join(os.path.dirname(HERE), "src", "virtual_obstacle_publisher.py")
-_ns = {}
-exec(compile(open(_vop).read().replace("from pymavlink import mavutil",
-                                       "from pymavlink import mavutil"),
-             _vop, "exec"), _ns)
-build_ring = _ns["build_ring"]
-SECTOR_WIDTH_DEG = _ns["SECTOR_WIDTH_DEG"]
-
-
-def read_course(path):
-    obstacles = []
-    with open(path) as fh:
-        for lineno, raw in enumerate(fh, 1):
-            line = raw.split("#", 1)[0].strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) != 3:
-                sys.exit("%s:%d: expected 'north east radius'" % (path, lineno))
-            obstacles.append(tuple(float(p) for p in parts))
-    return obstacles
+from course import SECTOR_WIDTH_DEG, load, ring_from_course
 
 
 class Runner(object):
     def __init__(self, args):
         self.a = args
-        self.obstacles = read_course(args.course)
+        self.crs = load(args.course)
         self.x = self.y = self.z = self.yaw = 0.0
         self.pitch = self.roll = 0.0
         self.armed = False
         self.texts = []
         self.track = []
-        self.closest = dict((i, 1e9) for i in range(len(self.obstacles)))
+        self.closest = dict((i, 1e9) for i in range(len(self.crs.shapes)))
+        self.blind_frames = 0
+        self.total_frames = 0
 
         print("connecting to %s ..." % args.connect)
         self.m = mavutil.mavlink_connection(args.connect)
         self.m.wait_heartbeat()
-        print("connected, sys %d\n" % self.m.target_system)
+        print("connected, sys %d" % self.m.target_system)
         self.m.mav.request_data_stream_send(
             self.m.target_system, self.m.target_component,
             mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1)
@@ -83,14 +72,12 @@ class Runner(object):
             if t == "LOCAL_POSITION_NED":
                 self.x, self.y, self.z = msg.x, msg.y, msg.z
                 self.track.append((self.x, self.y))
-                for i, (ox, oy, r) in enumerate(self.obstacles):
-                    d = math.hypot(ox - self.x, oy - self.y) - r
+                for i, shp in enumerate(self.crs.shapes):
+                    d = shp.distance(self.x, self.y)
                     if d < self.closest[i]:
                         self.closest[i] = d
             elif t == "ATTITUDE":
-                self.yaw = msg.yaw
-                self.pitch = msg.pitch
-                self.roll = msg.roll
+                self.yaw, self.pitch, self.roll = msg.yaw, msg.pitch, msg.roll
             elif t == "HEARTBEAT" and msg.get_srcComponent() == 1:
                 self.armed = bool(msg.base_mode &
                                   mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
@@ -99,28 +86,28 @@ class Runner(object):
 
     # -- perception --------------------------------------------------------
     def start_depth(self):
-        """Subscribe to the Gazebo depth camera and set up the real conversion.
-
-        This is the switch from "told where the obstacles are" to "worked it out
-        by looking". Nothing downstream changes: the same OBSTACLE_DISTANCE ring
-        goes out, and ArduPilot cannot tell the difference.
+        """Subscribe to the Gazebo depth camera and build the real converter.
 
         Gazebo's Python bindings ship with gz-harmonic, so no ROS is involved.
         """
         import numpy as np
         from gz.transport13 import Node
         from gz.msgs10.image_pb2 import Image
-
-        sys.path.insert(0, os.path.join(os.path.dirname(HERE), "src"))
         from depth_to_obstacle_ring import DepthToRing
 
         self._np = np
         self._frame = None
 
+        if self.a.noise:
+            from stereo_noise import corrupt, OAKD_LITE_BASELINE_M
+            self._corrupt = corrupt
+            self._baseline = OAKD_LITE_BASELINE_M
+            self._rng = np.random.default_rng(self.a.seed)
+
         w, h = self.a.cam_width, self.a.cam_height
-        fx = (w / 2.0) / math.tan(math.radians(self.a.fov) / 2.0)
+        self._fx = (w / 2.0) / math.tan(math.radians(self.a.fov) / 2.0)
         self.converter = DepthToRing(
-            fx, fx, (w - 1) / 2.0, (h - 1) / 2.0, w, h,
+            self._fx, self._fx, (w - 1) / 2.0, (h - 1) / 2.0, w, h,
             min_range_m=self.a.min_range, max_range_m=self.a.max_range,
             height_band_m=self.a.height_band, stride=2)
 
@@ -131,7 +118,7 @@ class Runner(object):
         self._node = Node()
         if not self._node.subscribe(Image, self.a.topic, on_image):
             sys.exit("could not subscribe to %s" % self.a.topic)
-        print("subscribed to %s (%dx%d, fx=%.1f)" % (self.a.topic, w, h, fx))
+        print("subscribed to %s (%dx%d, fx=%.1f)" % (self.a.topic, w, h, self._fx))
 
         t0 = time.time()
         while self._frame is None and time.time() - t0 < 15:
@@ -139,11 +126,14 @@ class Runner(object):
         if self._frame is None:
             sys.exit("no depth frames on %s -- is Gazebo running the "
                      "obstacle_course world?" % self.a.topic)
-        print("first depth frame received\n")
+        print("first depth frame received")
 
     def ring_from_depth(self):
         depth = self._np.frombuffer(self._frame, dtype=self._np.float32).reshape(
             self.a.cam_height, self.a.cam_width)
+        if self.a.noise:
+            depth = self._corrupt(depth, self._fx, baseline_m=self._baseline,
+                                  max_range_m=self.a.max_range, rng=self._rng)
         ring = self.converter.process(depth, pitch_rad=self.pitch,
                                       roll_rad=self.roll)
         return ring, self.converter.min_cm, self.converter.max_cm
@@ -152,8 +142,10 @@ class Runner(object):
         if self.a.source == "depth":
             ring, min_cm, max_cm = self.ring_from_depth()
         else:
-            ring, min_cm, max_cm = build_ring(self.obstacles, self.x, self.y, self.yaw,
-                                              self.a.fov, 0.2, self.a.max_range)
+            ring, min_cm, max_cm = ring_from_course(
+                self.crs, self.x, self.y, self.yaw,
+                self.a.fov, self.a.min_range, self.a.max_range)
+
         self.m.mav.obstacle_distance_send(
             int(time.monotonic() * 1e6),
             mavutil.mavlink.MAV_DISTANCE_SENSOR_LASER,
@@ -162,7 +154,6 @@ class Runner(object):
         return ring, max_cm
 
     def pump(self, seconds, until=None, log_every=None):
-        """Run the 10 Hz loop: drain, publish, optionally log, until a predicate."""
         t0 = time.time()
         next_log = 0.0
         while time.time() - t0 < seconds:
@@ -186,18 +177,20 @@ class Runner(object):
         g = None
         while g is None:
             self.drain()
-            g = self.m.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=5)
+            g = self.m.recv_match(type="GLOBAL_POSITION_INT", blocking=True,
+                                  timeout=5)
         lat0, lon0 = g.lat / 1e7, g.lon / 1e7
 
         def offset(north, east):
             return (lat0 + north / 111320.0,
                     lon0 + east / (111320.0 * math.cos(math.radians(lat0))))
 
+        gn, ge = self.crs.goal
         items = [(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0.0, 0.0, self.a.alt),
-                 (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, self.a.north, 0.0, self.a.alt)]
+                 (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, gn, ge, self.a.alt)]
 
-        self.m.mav.mission_count_send(self.m.target_system, self.m.target_component,
-                                      len(items) + 1,
+        self.m.mav.mission_count_send(self.m.target_system,
+                                      self.m.target_component, len(items) + 1,
                                       mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
         sent, t0 = 0, time.time()
         while sent < len(items) + 1 and time.time() - t0 < 25:
@@ -222,25 +215,30 @@ class Runner(object):
         ack = self.m.recv_match(type="MISSION_ACK", blocking=True, timeout=8)
         return ack.type if ack else None
 
+    # -- run ---------------------------------------------------------------
     def run(self):
-        print("course: %d pillars" % len(self.obstacles))
-        for (n, e, r) in self.obstacles:
-            print("  north %6.1f  east %6.1f  r %.1f" % (n, e, r))
-        print("mission: straight to %.0f m north at %.0f m altitude" %
-              (self.a.north, self.a.alt))
-        print("sensor : %.0f deg FOV, %.0f m range\n" % (self.a.fov, self.a.max_range))
+        print()
+        print(self.crs.describe())
+        gn, ge = self.crs.goal
+        print()
+        print("mission : straight to north %.0f east %.0f at %.0f m" %
+              (gn, ge, self.a.alt))
+        print("sensor  : %.0f deg FOV, %.1f-%.0f m" %
+              (self.a.fov, self.a.min_range, self.a.max_range))
 
         if self.a.source == "depth":
-            print("perception: REAL depth camera, no obstacle positions given")
+            print("percept : REAL depth camera%s, no obstacle positions given"
+                  % (", WITH stereo noise" if self.a.noise else ""))
             self.start_depth()
         else:
-            print("perception: virtual, computed from known obstacle positions\n")
+            print("percept : computed from known obstacle positions")
+        print()
 
         print("priming proximity data ...")
         self.pump(3.0)
 
         print("uploading mission ... ", end="")
-        print("ack=%s\n" % self.upload_mission())
+        print("ack=%s" % self.upload_mission())
 
         self.m.mav.mission_set_current_send(self.m.target_system,
                                             self.m.target_component, 1)
@@ -250,17 +248,16 @@ class Runner(object):
         self.m.set_mode_apm("GUIDED")
         self.pump(2.0)
 
-        # Straight after a reboot the EKF is still aligning and the GPS driver is
-        # still probing, so the first arm attempt is usually refused with
-        # "Accels inconsistent" or "GPS still configuring". Those clear on their
-        # own within a minute, so retry rather than give up.
+        # Straight after a reboot the EKF is still aligning and the GPS driver
+        # still probing. Those refusals clear on their own, so retry.
         deadline = time.time() + self.a.arm_timeout
         attempt = 0
         while time.time() < deadline and not self.armed:
             attempt += 1
-            self.m.mav.command_long_send(self.m.target_system, self.m.target_component,
-                                         mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                                         0, 1, 0, 0, 0, 0, 0, 0)
+            self.m.mav.command_long_send(
+                self.m.target_system, self.m.target_component,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0, 1, 0, 0, 0, 0, 0, 0)
             if self.pump(8.0, until=lambda: self.armed):
                 break
             refusals = [t for t in self.texts if "rm:" in t]
@@ -271,60 +268,74 @@ class Runner(object):
             for t in self.texts[-10:]:
                 print("    %s" % t)
             return 1
-        print("  armed\n")
+        print("  armed")
 
         print("takeoff to %.0f m" % self.a.alt)
-        self.m.mav.command_long_send(self.m.target_system, self.m.target_component,
-                                     mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-                                     0, 0, 0, 0, 0, 0, 0, self.a.alt)
-        self.pump(40.0, until=lambda: -self.z > self.a.alt * 0.92)
-        print("  at %.1f m\n" % -self.z)
+        self.m.mav.command_long_send(
+            self.m.target_system, self.m.target_component,
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 0, 0, 0, 0, 0, self.a.alt)
+        self.pump(45.0, until=lambda: -self.z > self.a.alt * 0.92)
+        print("  at %.1f m" % -self.z)
 
+        print()
         print("AUTO -- flying the course")
         self.m.set_mode_apm("AUTO")
         print("      t      north    east   alt  sectors   nearest")
         print("  ---------------------------------------------------")
-        reached = self.pump(self.a.timeout,
-                            until=lambda: self.x > self.a.north - 3.0,
-                            log_every=4.0)
 
-        print("\n%s" % ("waypoint reached" if reached else "TIMED OUT"))
-        max_east = max((abs(y) for _, y in self.track), default=0.0)
-        print("max lateral deviation : %.2f m" % max_east)
-        print("closest approach to each pillar (surface distance):")
-        worst = 1e9
-        for i, (n, e, r) in enumerate(self.obstacles):
+        def arrived():
+            return math.hypot(gn - self.x, ge - self.y) < 4.0
+
+        reached = self.pump(self.a.timeout, until=arrived, log_every=4.0)
+
+        print()
+        print("%s" % ("GOAL REACHED" if reached else "TIMED OUT"))
+        max_lat = max((abs(y) for _, y in self.track), default=0.0)
+        print("max lateral deviation : %.2f m" % max_lat)
+        print("closest approach to each obstacle (surface distance):")
+        worst, worst_i = 1e9, None
+        for i, shp in enumerate(self.crs.shapes):
             d = self.closest[i]
-            worst = min(worst, d)
+            if d < worst:
+                worst, worst_i = d, i + 1
             flag = "  <-- BREACH" if d < 0 else ""
-            print("  obs_%-2d north %6.1f east %6.1f : %6.2f m%s" % (i + 1, n, e, d, flag))
-        print("\nworst clearance: %.2f m  (margin asked for: 2.00 m)" % worst)
+            print("  obs_%-2d north %6.1f east %6.1f  %-22s %6.2f m%s"
+                  % (i + 1, shp.north, shp.east, shp.describe(), d, flag))
+        print()
+        print("worst clearance: %.2f m at obs_%s  (margin asked for: %.2f m)"
+              % (worst, worst_i, self.a.margin))
         return 0 if (reached and worst > 0) else 1
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--connect", default="tcp:127.0.0.1:5760")
     p.add_argument("--course", default=os.path.join(HERE, "gazebo", "course.txt"))
-    p.add_argument("--north", type=float, default=130.0)
-    p.add_argument("--alt", type=float, default=10.0)
-    p.add_argument("--fov", type=float, default=72.0)
-    p.add_argument("--max-range", type=float, default=20.0)
-    p.add_argument("--timeout", type=float, default=200.0)
-    p.add_argument("--source", choices=("virtual", "depth"), default="virtual",
-                   help="virtual = obstacle positions from course.txt (geometry "
-                        "only, no sensing); depth = a real Gazebo depth camera "
-                        "through depth_to_obstacle_ring.py, with no knowledge of "
-                        "where anything is")
+    p.add_argument("--source", choices=("virtual", "depth"), default="virtual")
+    p.add_argument("--noise", action="store_true",
+                   help="corrupt the depth frame with a stereo error model "
+                        "before converting it (depth source only)")
+    p.add_argument("--seed", type=int, default=None,
+                   help="seed for the noise, so a run can be repeated exactly")
     p.add_argument("--topic", default="/depth_camera")
     p.add_argument("--cam-width", type=int, default=320)
     p.add_argument("--cam-height", type=int, default=240)
+    p.add_argument("--alt", type=float, default=10.0)
+    p.add_argument("--fov", type=float, default=72.0)
     p.add_argument("--min-range", type=float, default=0.5)
+    p.add_argument("--max-range", type=float, default=20.0)
     p.add_argument("--height-band", type=float, default=0.5)
-    p.add_argument("--arm-timeout", type=float, default=120.0,
-                   help="how long to keep retrying the arm while the EKF settles")
-    sys.exit(Runner(p.parse_args()).run())
+    p.add_argument("--margin", type=float, default=2.0,
+                   help="only used for reporting; the autopilot's own value is "
+                        "OA_MARGIN_MAX")
+    p.add_argument("--timeout", type=float, default=260.0)
+    p.add_argument("--arm-timeout", type=float, default=120.0)
+    args = p.parse_args()
+
+    if args.noise and args.source != "depth":
+        p.error("--noise only applies to --source depth")
+    sys.exit(Runner(args).run())
 
 
 if __name__ == "__main__":

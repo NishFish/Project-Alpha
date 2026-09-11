@@ -1,13 +1,33 @@
 # Obstacle course, in ArduPilot NED metres relative to home.
-#   north  east  radius
-# The mission flies due north from home to 130 m, so east values are the
-# lateral offsets the aircraft has to find its way around.
+# Read by make_world.py (renders it), virtual_obstacle_publisher.py (computes
+# what a sensor would see) and run_course.py (flies it and scores clearance).
 #
-# Two single pillars on the track, two gates it must thread, one final pillar.
-   25    0   2
-   45   -7   2
-   45    8   2
-   70    2   2
-   95   -6   2
-   95    7   2
-  118    0   2
+#   start <north> <east>
+#   goal  <north> <east>
+#   cyl   <north> <east> <radius>
+#   box   <north> <east> <size_north> <size_east> <yaw_deg>   yaw is clockwise from north
+
+start   0    0
+goal  150    0
+
+# --- 1. a single pillar on the track, the simplest case ---------------------
+cyl    25    0    2
+
+# --- 2. a gate: two pillars 15 m apart, centre roughly on track -------------
+cyl    45   -7    2
+cyl    45    8    2
+
+# --- 3. an angled wall. A pillar can be skirted; a 22 m wall has to be
+#        committed to, one side or the other, well before reaching it. -------
+box    68    4   22   1.2   115
+
+# --- 4. an L. Two walls meeting at a corner, opening toward the aircraft.
+#        Concave shapes are where reactive planners struggle: BendyRuler has
+#        no map and no memory, so it can steer into the mouth and only then
+#        discover it has to come back out. -------------------------------
+box    96   -3   16   1.2    90
+box   103    5   14   1.2     0
+
+# --- 5. a narrow gate, 8 m between surfaces, to finish ----------------------
+cyl   125   -6    2
+cyl   125    6    2

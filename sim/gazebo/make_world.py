@@ -30,6 +30,7 @@ is the nose. Gazebo cameras look along their own +X, so an unrotated sensor on
 base_link faces forward with no rotation needed.
 """
 
+import math
 import os
 import re
 import sys
@@ -54,7 +55,7 @@ CAM_FAR = 20.0
 CAM_RATE = 15
 CAM_TOPIC = "depth_camera"
 
-PILLAR = """
+CYL = """
     <model name="obs_{n}">
       <static>true</static>
       <pose>{east} {north} {z} 0 0 0</pose>
@@ -67,7 +68,45 @@ PILLAR = """
           <material>
             <ambient>0.62 0.26 0.08 1</ambient>
             <diffuse>0.85 0.36 0.11 1</diffuse>
-            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+"""
+
+BOX = """
+    <model name="obs_{n}">
+      <static>true</static>
+      <pose>{east} {north} {z} 0 0 {yaw_rad:.6f}</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>{sx} {sy} {h}</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>{sx} {sy} {h}</size></box></geometry>
+          <material>
+            <ambient>0.30 0.31 0.36 1</ambient>
+            <diffuse>0.46 0.48 0.55 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+"""
+
+# Markers are visual only -- no <collision>. They sit flat on the ground so the
+# depth camera never reports them: at cruise altitude the ground is far outside
+# the height band. A vertical marker would be seen as an obstacle.
+MARKER = """
+    <model name="{name}">
+      <static>true</static>
+      <pose>{east} {north} 0.08 0 0 0</pose>
+      <link name="link">
+        <visual name="disc">
+          <geometry><cylinder><radius>{r}</radius><length>0.15</length></cylinder></geometry>
+          <material>
+            <ambient>{col} 1</ambient>
+            <diffuse>{col} 1</diffuse>
+            <emissive>{emis} 1</emissive>
           </material>
         </visual>
       </link>
@@ -157,45 +196,62 @@ def drone_with_camera():
 def main():
     for path in (BASE_WORLD, DRONE_MODEL):
         if not os.path.exists(path):
-            sys.exit("not found: %s\nRun setup/wsl_setup.sh plugin first." % path)
+            sys.exit("not found: %s -- run setup/wsl_setup.sh plugin first" % path)
+
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "src"))
+    from course import load
 
     world = open(BASE_WORLD).read()
-    obstacles = read_course(COURSE)
+    crs = load(COURSE)
 
-    # Replace the <include> of the drone with the inlined model, carrying the
-    # include's own pose across onto the model.
     inc = re.search(
-        r"[ \t]*<include>\s*<uri>model://iris_with_gimbal</uri>\s*"
+        r"[ 	]*<include>\s*<uri>model://iris_with_gimbal</uri>\s*"
         r"(<pose[^>]*>[^<]*</pose>)?\s*</include>", world, re.S)
     if not inc:
         sys.exit("could not find the iris_with_gimbal <include> in %s" % BASE_WORLD)
 
-    pose = inc.group(1) or '<pose degrees="true">0 0 0.195 0 0 90</pose>'
+    pose = inc.group(1) or         '<pose degrees="true">0 0 0.195 0 0 90</pose>'
     model = drone_with_camera()
-    open_tag = re.search(r"<model\b[^>]*>", model).group(0)
-    model = model.replace(open_tag, open_tag + "\n      " + pose, 1)
-
+    open_tag = re.search(r"<model\s[^>]*>", model).group(0)
+    model = model.replace(open_tag, open_tag + chr(10) + "      " + pose, 1)
     world = world[:inc.start()] + "    " + model + world[inc.end():]
 
-    pillars = "".join(
-        PILLAR.format(n=i + 1, east=east, north=north, z=PILLAR_HEIGHT / 2.0,
-                      r=radius, h=PILLAR_HEIGHT)
-        for i, (north, east, radius) in enumerate(obstacles))
+    # Gazebo is ENU: x is east, y is north. Compass yaw runs clockwise, Gazebo
+    # yaw counter-clockwise, so the sign flips. One conversion, one place.
+    blocks = []
+    for i, shp in enumerate(crs.shapes, 1):
+        if shp.kind == "cyl":
+            blocks.append(CYL.format(n=i, east=shp.east, north=shp.north,
+                                     z=PILLAR_HEIGHT / 2.0, r=shp.radius,
+                                     h=PILLAR_HEIGHT))
+        else:
+            blocks.append(BOX.format(n=i, east=shp.east, north=shp.north,
+                                     z=PILLAR_HEIGHT / 2.0,
+                                     sx=shp.size_east, sy=shp.size_north,
+                                     h=PILLAR_HEIGHT,
+                                     yaw_rad=-math.radians(shp.yaw_deg)))
+
+    blocks.append(MARKER.format(name="marker_start", north=crs.start[0],
+                                east=crs.start[1], r=5.0,
+                                col="0.10 0.65 0.25", emis="0.05 0.30 0.12"))
+    blocks.append(MARKER.format(name="marker_goal", north=crs.goal[0],
+                                east=crs.goal[1], r=5.0,
+                                col="0.85 0.15 0.15", emis="0.40 0.05 0.05"))
 
     idx = world.rindex("</world>")
-    world = world[:idx] + pillars + world[idx:]
+    world = world[:idx] + "".join(blocks) + world[idx:]
 
     with open(OUT, "w") as fh:
         fh.write(world)
 
     print("base world : %s" % BASE_WORLD)
-    print("drone      : inlined from %s" % DRONE_MODEL)
     print("depth cam  : %.0f deg, %dx%d, %.1f-%.1f m, %d Hz on /%s"
           % (CAM_FOV_DEG, CAM_WIDTH, CAM_HEIGHT, CAM_NEAR, CAM_FAR,
              CAM_RATE, CAM_TOPIC))
-    print("course     : %d pillars" % len(obstacles))
-    for i, (north, east, radius) in enumerate(obstacles, 1):
-        print("  obs_%-2d north %6.1f  east %6.1f  r %.1f" % (i, north, east, radius))
+    print("course     :")
+    for line in crs.describe().split(chr(10)):
+        print("  " + line)
+    print("markers    : green disc at start, red disc at goal (visual only)")
     print("wrote      : %s" % OUT)
 
 
