@@ -9,7 +9,9 @@ Do Level A first and confirm it flies before attempting Level B.
 
 ## Before anything: WSL2 has to start
 
-Right now it does not. `wsl -d Ubuntu` fails with:
+**Resolved 2026-09-10** by the `.wslconfig` in step 2 below; kept here because
+the failure is easy to hit again after a Windows update. The symptom was
+`wsl -d Ubuntu` failing with:
 
 ```
 Insufficient system resources exist to complete the requested service.
