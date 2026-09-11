@@ -25,14 +25,29 @@ Each step has a gate. Don't move on until it passes.
 - [x] **1. Fix the PC.** Convert WSL1 to WSL2. **Done.**
       *Gate: `wsl -l -v` reports version 2.*
 
-- [ ] **2. Fake drone flying.** ArduPilot SITL + Gazebo.
+- [x] **2. Fake drone flying.** ArduPilot SITL + Gazebo. **Done 2026-09-11.**
       *Gate: a simulated drone flies 4 waypoints you drew in Mission Planner.*
+      Gazebo Harmonic 8.15 with the ArduPilot plugin, ArduCopter 4.8.0-dev in
+      SITL. Three traps cost an afternoon and are written up in
+      [03-gazebo.md](03-gazebo.md): `FRAME_CLASS` was 0 so it would not arm, a
+      disarmed multirotor does not move, and `PRX1_TYPE = 2` blocks arming until
+      proximity data is flowing.
 
-- [ ] **3. Lie to the fake drone.** Run `src/fake_obstacle_publisher.py`.
+- [x] **3. Lie to the fake drone.** **PASSED 2026-09-11.**
       *Gate: the simulated drone curves around an obstacle that doesn't exist,
       then rejoins its path.*
-      **This is the most important step in the project.** Once it passes, the
-      hard part is done and everything after is swapping fake numbers for real ones.
+      A straight 70 m AUTO mission deviated **8.34 m** around a virtual obstacle
+      35 m north, slowed to 1.1 m/s abeam of it, rejoined the track and reached
+      the waypoint. Detection began with the obstacle surface 17.5 m away,
+      inside the 20 m sensor range, exactly as predicted. Cruise held 2.0 m/s.
+
+      Use **`src/virtual_obstacle_publisher.py`** for this, not
+      `fake_obstacle_publisher.py` -- the latter fixes the wall to the body
+      frame, so it turns with the aircraft and can never be flown around. It is
+      still the right tool for proving the plumbing works.
+
+      **This was the most important step in the project.** The hard part is done;
+      everything after is swapping fake numbers for real ones.
 
 - [ ] **4. Fake camera.** Add a depth camera to the simulator and feed its output
       through `src/depth_to_obstacle_ring.py`, which emits the same message.
