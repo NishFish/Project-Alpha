@@ -91,6 +91,11 @@ def main():
     parser.add_argument("--obstacle", action="append", type=parse_obstacle,
                         metavar="N,E,R", default=None,
                         help="obstacle as north,east,radius in metres from home; repeatable")
+    parser.add_argument("--course", metavar="FILE",
+                        help="read obstacles from a file, one 'north east radius' "
+                             "per line; blank lines and # comments ignored. Keeps "
+                             "the publisher and the Gazebo spawner on one "
+                             "definition instead of two that can drift apart.")
     parser.add_argument("--fov", type=float, default=72.0,
                         help="sensor field of view in degrees (OAK-D Lite is 72)")
     parser.add_argument("--min-range", type=float, default=0.2)
@@ -98,7 +103,20 @@ def main():
     parser.add_argument("--rate", type=float, default=10.0)
     args = parser.parse_args()
 
-    obstacles = args.obstacle or [(30.0, 0.0, 4.0)]
+    obstacles = list(args.obstacle or [])
+    if args.course:
+        with open(args.course) as fh:
+            for lineno, raw in enumerate(fh, 1):
+                line = raw.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) != 3:
+                    raise SystemExit("%s:%d: expected 'north east radius', got %r"
+                                     % (args.course, lineno, line))
+                obstacles.append(tuple(float(p) for p in parts))
+    if not obstacles:
+        obstacles = [(30.0, 0.0, 4.0)]
 
     print("connecting to %s ..." % args.connect)
     m = mavutil.mavlink_connection(args.connect)

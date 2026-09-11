@@ -1,0 +1,13 @@
+# Obstacle course, in ArduPilot NED metres relative to home.
+#   north  east  radius
+# The mission flies due north from home to 130 m, so east values are the
+# lateral offsets the aircraft has to find its way around.
+#
+# Two single pillars on the track, two gates it must thread, one final pillar.
+   25    0   2
+   45   -7   2
+   45    8   2
+   70    2   2
+   95   -6   2
+   95    7   2
+  118    0   2

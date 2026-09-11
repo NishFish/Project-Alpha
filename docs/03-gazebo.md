@@ -238,3 +238,64 @@ gz topic -e -t /world/iris_runway/dynamic_pose/info -n 1 | grep -A12 'name: "iri
 ```
 
 A `z` of 10.19 means the model really is ten metres up.
+
+## The obstacle course
+
+`sim/gazebo/course.txt` defines the obstacles once, in ArduPilot NED metres
+relative to home. Two things read it, so they cannot disagree:
+
+* `sim/gazebo/make_world.py` bakes them into a world file as visible pillars
+* `sim/run_course.py` publishes what a forward sensor would see of them
+
+```bash
+python3 sim/gazebo/make_world.py
+gz sim -v4 -r sim/gazebo/obstacle_course.sdf     # terminal 1
+sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --no-mavproxy   # terminal 2
+python3 sim/run_course.py                                                # terminal 3
+```
+
+### Put obstacles in the world, not into a live one
+
+`spawn_course.sh` adds obstacles to an already-running world through Gazebo's
+`create` service, and it works -- but spawning a static 14 m pillar around a
+hovering aircraft shoves it out of the sky. That is exactly what happened on the
+first attempt: the iris was parked at 70 m north, a pillar appeared at 70 m
+north, and the aircraft was knocked sideways and landed. Use `make_world.py`
+so the pillars exist before anything takes off.
+
+### Gazebo is ENU, ArduPilot is NED
+
+Measured, not assumed: with the aircraft at ArduPilot `north 69.9, east 0.0`,
+Gazebo reported `x -0.03, y 69.88`. So **Gazebo x is east and Gazebo y is
+north**, while `LOCAL_POSITION_NED` is x=north, y=east. The two are swapped, and
+getting it wrong puts the pillars at right angles to where the aircraft believes
+they are. `make_world.py` does the swap.
+
+### Environment variables and non-interactive shells
+
+The `GZ_SIM_RESOURCE_PATH` exports live in `~/.bashrc`, which a non-interactive
+shell does not read, so launching Gazebo from a script fails with
+`Unable to find uri[model://runway]`. Export them explicitly in any script.
+
+### MAVProxy cannot run detached
+
+`sim_vehicle.py` launched in the background reports `MAVProxy exited` and then
+kills everything, because MAVProxy needs a terminal. Use `--no-mavproxy` for
+scripted runs and talk to SITL directly on `tcp:127.0.0.1:5760`. You lose the
+map and console, and the automatic forward to the Windows host on 14550, which
+is how Mission Planner was connecting -- point it at `<wsl-ip>:5760` over TCP if
+you want it back.
+
+### Parameters are per working directory
+
+`sim_vehicle.py` keeps `eeprom.bin` in whatever directory you launch it from, so
+starting it somewhere new gives you **default parameters** -- `FRAME_CLASS` back
+to 0, avoidance off. Launch from the same directory every time, or re-apply the
+parameters after moving.
+
+### Arming right after a reboot
+
+The first attempt is normally refused with `Accels inconsistent` or
+`GPS 1 still configuring this GPS`. The EKF is still aligning and the GPS driver
+still probing; both clear within a minute. `run_course.py` retries for
+`--arm-timeout` seconds rather than treating the first refusal as fatal.
